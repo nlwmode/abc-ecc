@@ -2,17 +2,19 @@
 
   Synopsis    [Analytical placement for the physical-synthesis flow]
 
-  Description [A DreamPlace-style quadratic placer, simplified for the
-               first working version of the flow:
+  Description [A RePlAce/DREAMPlace-style analytical placer (CPU only):
                  1) build the netlist of mapped cells, PIs, and POs
                  2) minimize quadratic wirelength (clique net model)
-                    with a Jacobi-preconditioned conjugate gradient
-                 3) spread the cells to uniform density by mapping the
-                    cumulative cell width onto the core along each axis
+                    with a Jacobi-preconditioned conjugate gradient and
+                    equalize the cell density with a monotone warp
+                 3) run nonlinear global placement: log-sum-exp
+                    wirelength with an annealed smoothing parameter plus
+                    the electrostatic density penalty, whose field comes
+                    from a Poisson solve in the DCT domain over a bin
+                    grid.  The iterations use Nesterov acceleration with
+                    a Barzilai-Borwein step size, and the density weight
+                    grows whenever the density overflow stops improving
                  4) legalize the cells into standard-cell rows
-                 5) refine by alternating a quadratic solve, anchored at
-                    the current placement, with legalization, keeping the
-                    best wirelength seen
                The placer works on the Gia network only through the
                bindings stored in Phys_Man_t, so the cost model can be
                replaced without touching the command layer.]
@@ -31,10 +33,11 @@ ABC_NAMESPACE_HEADER_START
 
 typedef struct Phys_PlacePars_t_
 {
-    float Util;        /* target core utilization                  */
-    float Aspect;      /* core height / width                      */
-    int   nIterCG;     /* conjugate-gradient iterations            */
-    int   nIterRefine; /* wirelength-refinement rounds             */
+    float Util;         /* target core utilization                 */
+    float Aspect;       /* core height / width                     */
+    int   nIterCG;      /* conjugate-gradient iterations           */
+    int   nIterNest;    /* nonlinear placement iterations          */
+    float StopOverflow; /* density overflow at which to stop       */
     int   fVerbose;
 } Phys_PlacePars_t;
 

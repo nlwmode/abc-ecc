@@ -758,9 +758,10 @@ usage:
   Synopsis    [&phys_place command]
 
   Description [Analytically places the mapped and bound Gia netlist.
-               The placer is a simplified DreamPlace-style quadratic
-               solver followed by density spreading, row legalization,
-               and wirelength refinement.]
+               A quadratic solver provides the starting point; the
+               RePlAce/DREAMPlace nonlinear placement then minimizes the
+               log-sum-exp wirelength plus an electrostatic density
+               penalty, and the result is legalized into the rows.]
 
   SideEffects []
 
@@ -772,7 +773,7 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
     Phys_PlaceSetDefault( &Def );
     Pars = Def;
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "u:a:i:s:vh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "u:a:i:s:o:vh" )) != EOF )
     {
         switch ( c )
         {
@@ -790,7 +791,11 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
             break;
         case 's':
             if ( globalUtilOptarg == NULL ) goto usage;
-            Pars.nIterRefine = atoi( globalUtilOptarg );
+            Pars.nIterNest = atoi( globalUtilOptarg );
+            break;
+        case 'o':
+            if ( globalUtilOptarg == NULL ) goto usage;
+            Pars.StopOverflow = (float)atof( globalUtilOptarg );
             break;
         case 'v':
             fVerbose ^= 1;
@@ -819,12 +824,13 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: &phys_place [-u num] [-a num] [-i num] [-s num] [-vh]\n" );
+    Abc_Print( -2, "usage: &phys_place [-u num] [-a num] [-i num] [-s num] [-o num] [-vh]\n" );
     Abc_Print( -2, "\t          places the mapped and bound Gia netlist\n" );
     Abc_Print( -2, "\t-u num  : target core utilization, 0 < num <= 1 [default = %.2f]\n", Def.Util );
     Abc_Print( -2, "\t-a num  : core height / width [default = %.2f]\n", Def.Aspect );
     Abc_Print( -2, "\t-i num  : conjugate-gradient iterations [default = %d]\n", Def.nIterCG );
-    Abc_Print( -2, "\t-s num  : wirelength-refinement rounds, 0 to skip [default = %d]\n", Def.nIterRefine );
+    Abc_Print( -2, "\t-s num  : nonlinear placement iterations [default = %d]\n", Def.nIterNest );
+    Abc_Print( -2, "\t-o num  : density overflow at which to stop [default = %.2f]\n", Def.StopOverflow );
     Abc_Print( -2, "\t-v      : print detailed information [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );
     return 1;

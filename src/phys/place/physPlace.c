@@ -41,11 +41,12 @@ static int Phys_CompareByX( const void * a, const void * b );
 
 void Phys_PlaceSetDefault( Phys_PlacePars_t * p )
 {
-    p->Util        = 0.60f;
-    p->Aspect      = 1.00f;
-    p->nIterCG     = 300;
-    p->nIterRefine = 20;
-    p->fVerbose    = 0;
+    p->Util         = 0.60f;
+    p->Aspect       = 1.00f;
+    p->nIterCG      = 300;
+    p->nIterNest    = 400;
+    p->StopOverflow = 0.10f;
+    p->fVerbose     = 0;
 }
 
 static float Phys_PlaceRand( unsigned * pSeed )
@@ -399,14 +400,6 @@ static void Phys_PlaceHpwlInternal( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx
     *pX = HpwlX;
     *pY = HpwlY;
 }
-/* wirelength of the internal (free-to-free) nets only */
-static double Phys_PlaceHpwlFree( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx, Vec_Int_t * vFreeIdx,
-                                  Vec_Ptr_t * vSinks, int nObjs )
-{
-    double HpwlX = 0.0, HpwlY = 0.0;
-    Phys_PlaceHpwlInternal( pNodes, vNode2Idx, vFreeIdx, vSinks, nObjs, &HpwlX, &HpwlY );
-    return HpwlX + HpwlY;
-}
 /* extent of the free node positions, for diagnostics */
 static void Phys_PlaceExtent( Phys_PNode_t * pNodes, Vec_Int_t * vFree, float * pMinX, float * pMaxX, float * pMinY, float * pMaxY )
 {
@@ -723,6 +716,732 @@ static int Phys_PlaceRowsUsed( Phys_PNode_t * pNodes, Vec_Int_t * vFree,
 
 /**Function*************************************************************
 
+  Synopsis    [Nonlinear global placement: bin grid and Poisson field]
+
+  Description [Implements the density model of RePlAce/DREAMPlace.
+               The core is divided into bins and every cell contributes
+               the area of its overlap with each bin it touches, computed
+               with the triangle density function.  The normalized
+               density map is the right-hand side of a Poisson equation
+               with Neumann boundary conditions, which is solved in the
+               DCT-II domain where the discrete Laplacian is diagonal.
+               With laplacian(F) = -rho the electric field E = -grad F
+               points away from dense regions, so descending along
+               lambda * E spreads the cells.]
+
+  SideEffects []
+
+***********************************************************************/
+
+typedef struct Phys_PlaceBins_t_
+{
+    int     nBinsX, nBinsY;   /* bin grid                                    */
+    double  X0, Y0;           /* lower-left corner of the core               */
+    double  BinW, BinH;       /* bin dimensions                              */
+    double  Target;           /* target density (utilization)                */
+    double  TotalArea;        /* total movable area, normalizes the overflow */
+    double * pDens;           /* density map, nBinsX * nBinsY                */
+    double * pPot;            /* electrostatic potential                     */
+    double * pFieldX;         /* electric field, x component                 */
+    double * pFieldY;         /* electric field, y component                 */
+    double * pSpec;           /* DCT spectrum, scratch                       */
+    double * pTmp;            /* DCT scratch                                 */
+    double * pCosX;           /* cosine tables of the DCT                    */
+    double * pCosY;
+    double * pEigX;           /* eigenvalues of the discrete Laplacian       */
+    double * pEigY;
+} Phys_PlaceBins_t;
+
+#define PHYS_PLACE_PI 3.14159265358979323846
+
+static void Phys_PlaceBinsInit( Phys_PlaceBins_t * b, Phys_Man_t * p, double x0, double y0,
+                                double W, double H, double Target, double TotalArea )
+{
+    int M, N, i, j, nBins;
+    memset( b, 0, sizeof(Phys_PlaceBins_t) );
+    /* a few sites per bin, but never more than 64 bins per direction */
+    M = (int)( W / (4.0 * (double)p->SiteW) );
+    N = (int)( H / (2.0 * (double)p->SiteH) );
+    if ( M < 8 ) M = 8;
+    if ( N < 8 ) N = 8;
+    if ( M > 64 ) M = 64;
+    if ( N > 64 ) N = 64;
+    b->nBinsX    = M;
+    b->nBinsY    = N;
+    b->X0        = x0;
+    b->Y0        = y0;
+    b->BinW      = W / M;
+    b->BinH      = H / N;
+    b->Target    = Target;
+    b->TotalArea = TotalArea;
+    nBins = M * N;
+    b->pDens   = ABC_CALLOC( double, nBins );
+    b->pPot    = ABC_CALLOC( double, nBins );
+    b->pFieldX = ABC_CALLOC( double, nBins );
+    b->pFieldY = ABC_CALLOC( double, nBins );
+    b->pSpec   = ABC_CALLOC( double, nBins );
+    b->pTmp    = ABC_CALLOC( double, nBins );
+    b->pCosX   = ABC_ALLOC( double, M*M );
+    b->pCosY   = ABC_ALLOC( double, N*N );
+    b->pEigX   = ABC_ALLOC( double, M );
+    b->pEigY   = ABC_ALLOC( double, N );
+    for ( i = 0; i < M; i++ )
+        for ( j = 0; j < M; j++ )
+            b->pCosX[i*M+j] = cos( PHYS_PLACE_PI * j * (2.0*i + 1.0) / (2.0*M) );
+    for ( i = 0; i < N; i++ )
+        for ( j = 0; j < N; j++ )
+            b->pCosY[i*N+j] = cos( PHYS_PLACE_PI * j * (2.0*i + 1.0) / (2.0*N) );
+    /* eigenvalues of the cell-centered Neumann Laplacian */
+    for ( j = 0; j < M; j++ )
+        b->pEigX[j] = (2.0 - 2.0*cos(PHYS_PLACE_PI*j/M)) / (b->BinW*b->BinW);
+    for ( j = 0; j < N; j++ )
+        b->pEigY[j] = (2.0 - 2.0*cos(PHYS_PLACE_PI*j/N)) / (b->BinH*b->BinH);
+}
+
+static void Phys_PlaceBinsFree( Phys_PlaceBins_t * b )
+{
+    ABC_FREE( b->pDens );
+    ABC_FREE( b->pPot );
+    ABC_FREE( b->pFieldX );
+    ABC_FREE( b->pFieldY );
+    ABC_FREE( b->pSpec );
+    ABC_FREE( b->pTmp );
+    ABC_FREE( b->pCosX );
+    ABC_FREE( b->pCosY );
+    ABC_FREE( b->pEigX );
+    ABC_FREE( b->pEigY );
+}
+
+/* orthonormal DCT-II of an M x N array, used as the forward Poisson transform */
+static void Phys_PlaceDct( int M, int N, const double * pIn,
+                           const double * pCosX, const double * pCosY,
+                           double * pOut, double * pTmp )
+{
+    int i, j, u, v;
+    memset( pTmp, 0, sizeof(double)*M*N );
+    for ( i = 0; i < M; i++ )
+        for ( j = 0; j < N; j++ )
+        {
+            double Val = pIn[i*N+j];
+            if ( Val == 0.0 ) continue;
+            for ( u = 0; u < M; u++ )
+                pTmp[u*N+j] += Val * pCosX[i*M+u];
+        }
+    for ( u = 0; u < M; u++ )
+    {
+        double cu = (u == 0) ? sqrt(1.0/M) : sqrt(2.0/M);
+        for ( v = 0; v < N; v++ )
+            pOut[u*N+v] = 0.0;
+        for ( j = 0; j < N; j++ )
+        {
+            double Val = pTmp[u*N+j];
+            if ( Val == 0.0 ) continue;
+            for ( v = 0; v < N; v++ )
+                pOut[u*N+v] += Val * pCosY[j*N+v];
+        }
+        for ( v = 0; v < N; v++ )
+        {
+            double cv = (v == 0) ? sqrt(1.0/N) : sqrt(2.0/N);
+            pOut[u*N+v] *= cu * cv;
+        }
+    }
+}
+
+/* orthonormal inverse DCT-II */
+static void Phys_PlaceIdct( int M, int N, const double * pIn,
+                            const double * pCosX, const double * pCosY,
+                            double * pOut, double * pTmp )
+{
+    int i, j, u, v;
+    memset( pTmp, 0, sizeof(double)*M*N );
+    for ( u = 0; u < M; u++ )
+    {
+        double cu = (u == 0) ? sqrt(1.0/M) : sqrt(2.0/M);
+        for ( j = 0; j < N; j++ )
+        {
+            double Sum = 0.0;
+            for ( v = 0; v < N; v++ )
+            {
+                double cv = (v == 0) ? sqrt(1.0/N) : sqrt(2.0/N);
+                Sum += cu * cv * pIn[u*N+v] * pCosY[j*N+v];
+            }
+            pTmp[u*N+j] = Sum;
+        }
+    }
+    for ( i = 0; i < M; i++ )
+        for ( j = 0; j < N; j++ )
+        {
+            double Sum = 0.0;
+            for ( u = 0; u < M; u++ )
+                Sum += pTmp[u*N+j] * pCosX[i*M+u];
+            pOut[i*N+j] = Sum;
+        }
+}
+
+/* solves laplacian(F) = -density and stores E = -grad F */
+static void Phys_PlaceField( Phys_PlaceBins_t * b )
+{
+    int M = b->nBinsX, N = b->nBinsY, i, j, u, v;
+    double hx = b->BinW, hy = b->BinH;
+    Phys_PlaceDct( M, N, b->pDens, b->pCosX, b->pCosY, b->pSpec, b->pTmp );
+    for ( u = 0; u < M; u++ )
+        for ( v = 0; v < N; v++ )
+        {
+            double D = b->pEigX[u] + b->pEigY[v];
+            /* laplacian(F) = -rho is  -D*F = -rho  in the DCT domain; the
+               constant mode is a free additive constant and is dropped */
+            b->pSpec[u*N+v] = (u == 0 && v == 0) ? 0.0 : b->pSpec[u*N+v] / D;
+        }
+    Phys_PlaceIdct( M, N, b->pSpec, b->pCosX, b->pCosY, b->pPot, b->pTmp );
+    for ( i = 0; i < M; i++ )
+        for ( j = 0; j < N; j++ )
+        {
+            double Fx, Fy;
+            /* the Neumann condition mirrors the ghost bin, so the
+               centered difference at the boundary uses the boundary bin
+               itself on the outside */
+            if ( i == 0 )
+                Fx = (b->pPot[(i+1)*N+j] - b->pPot[i*N+j]) / (2.0*hx);
+            else if ( i == M-1 )
+                Fx = (b->pPot[i*N+j] - b->pPot[(i-1)*N+j]) / (2.0*hx);
+            else
+                Fx = (b->pPot[(i+1)*N+j] - b->pPot[(i-1)*N+j]) / (2.0*hx);
+            if ( j == 0 )
+                Fy = (b->pPot[i*N+j+1] - b->pPot[i*N+j]) / (2.0*hy);
+            else if ( j == N-1 )
+                Fy = (b->pPot[i*N+j] - b->pPot[i*N+j-1]) / (2.0*hy);
+            else
+                Fy = (b->pPot[i*N+j+1] - b->pPot[i*N+j-1]) / (2.0*hy);
+            b->pFieldX[i*N+j] = -Fx;
+            b->pFieldY[i*N+j] = -Fy;
+        }
+}
+
+/* overlap of an interval with a bin, the triangle density function */
+static double Phys_PlaceTri( double lo, double size, double BinLo, double BinHi )
+{
+    double Hi = lo + size < BinHi ? lo + size : BinHi;
+    double Lo = lo > BinLo ? lo : BinLo;
+    return Hi > Lo ? Hi - Lo : 0.0;
+}
+
+/* bin range touched by the cell footprint, clamped to the bin grid */
+static void Phys_PlaceBinRange( Phys_PlaceBins_t * b, double lo, double size,
+                                int * pLo, int * pHi, int nBins, double Origin, double BinSize )
+{
+    int Low  = (int)floor( (lo - Origin) / BinSize );
+    int High = (int)floor( (lo + size - Origin) / BinSize ) + 1;
+    if ( Low < 0 ) Low = 0;
+    if ( High > nBins ) High = nBins;
+    if ( High < Low ) High = Low;
+    *pLo = Low;
+    *pHi = High;
+}
+
+static void Phys_PlaceDensityMap( Phys_PlaceBins_t * b, Phys_PNode_t * pNodes, int nFree,
+                                  Vec_Int_t * vFree, double * pX, double * pY, double * pDens )
+{
+    int M = b->nBinsX, N = b->nBinsY, k, kk, hh;
+    double InvArea = 1.0 / (b->BinW * b->BinH);
+    memset( pDens, 0, sizeof(double)*M*N );
+    for ( k = 0; k < nFree; k++ )
+    {
+        int iNode = Vec_IntEntry( vFree, k );
+        double w = (double)pNodes[iNode].W;
+        double h = (double)pNodes[iNode].H;
+        double xl = pX[k] - 0.5*w;
+        double yl = pY[k] - 0.5*h;
+        int kl, kh, bl, bh;
+        Phys_PlaceBinRange( b, xl, w, &kl, &kh, M, b->X0, b->BinW );
+        Phys_PlaceBinRange( b, yl, h, &bl, &bh, N, b->Y0, b->BinH );
+        for ( kk = kl; kk < kh; kk++ )
+        {
+            double Bxl = b->X0 + kk*b->BinW;
+            double px = Phys_PlaceTri( xl, w, Bxl, Bxl + b->BinW );
+            if ( px <= 0.0 ) continue;
+            for ( hh = bl; hh < bh; hh++ )
+            {
+                double Byl = b->Y0 + hh*b->BinH;
+                double py = Phys_PlaceTri( yl, h, Byl, Byl + b->BinH );
+                if ( py <= 0.0 ) continue;
+                pDens[kk*N+hh] += px*py*InvArea;
+            }
+        }
+    }
+}
+
+/* adds the gradient of the density penalty to the gradient of every free
+   cell; the electric force pushes a cell out of a crowded bin, so the
+   gradient of the penalty is its negative */
+static void Phys_PlaceDensityForce( Phys_PlaceBins_t * b, Phys_PNode_t * pNodes, int nFree,
+                                    Vec_Int_t * vFree, double * pX, double * pY,
+                                    double Lambda, double * pGx, double * pGy )
+{
+    int M = b->nBinsX, N = b->nBinsY, k, kk, hh;
+    for ( k = 0; k < nFree; k++ )
+    {
+        int iNode = Vec_IntEntry( vFree, k );
+        double w = (double)pNodes[iNode].W;
+        double h = (double)pNodes[iNode].H;
+        double xl = pX[k] - 0.5*w;
+        double yl = pY[k] - 0.5*h;
+        double Gx = 0.0, Gy = 0.0;
+        int kl, kh, bl, bh;
+        Phys_PlaceBinRange( b, xl, w, &kl, &kh, M, b->X0, b->BinW );
+        Phys_PlaceBinRange( b, yl, h, &bl, &bh, N, b->Y0, b->BinH );
+        for ( kk = kl; kk < kh; kk++ )
+        {
+            double Bxl = b->X0 + kk*b->BinW;
+            double px = Phys_PlaceTri( xl, w, Bxl, Bxl + b->BinW );
+            if ( px <= 0.0 ) continue;
+            for ( hh = bl; hh < bh; hh++ )
+            {
+                double Byl = b->Y0 + hh*b->BinH;
+                double py = Phys_PlaceTri( yl, h, Byl, Byl + b->BinH );
+                int Idx;
+                if ( py <= 0.0 ) continue;
+                Idx = kk*N + hh;
+                Gx += px*py*b->pFieldX[Idx];
+                Gy += px*py*b->pFieldY[Idx];
+            }
+        }
+        pGx[k] -= Lambda * Gx;
+        pGy[k] -= Lambda * Gy;
+    }
+}
+
+/* density overflow: the area above the target, relative to the cell area */
+static double Phys_PlaceOverflow( Phys_PlaceBins_t * b, double * pDens, double * pMaxDens )
+{
+    double Over = 0.0, Max = 0.0;
+    int t, nBins = b->nBinsX * b->nBinsY;
+    for ( t = 0; t < nBins; t++ )
+    {
+        if ( pDens[t] > b->Target )
+            Over += pDens[t] - b->Target;
+        if ( pDens[t] > Max )
+            Max = pDens[t];
+    }
+    if ( pMaxDens != NULL )
+        *pMaxDens = Max;
+    return b->TotalArea > 0.0 ? Over * b->BinW * b->BinH / b->TotalArea : 0.0;
+}
+
+
+/**Function*************************************************************
+
+  Synopsis    [Log-sum-exp wirelength and its gradient]
+
+  Description [For every net, the bounding box is replaced by
+               gamma*(log(sum exp((x-xmax)/gamma)) +
+                      log(sum exp((xmin-x)/gamma))) + xmax - xmin
+               and the same in y.  The exponentials are shifted by the
+               extremes, so they never overflow, and the gradient of a
+               pin is exp((x-xmax)/gamma)/sum_x - exp((xmin-x)/gamma)/sum_nx.
+               This is the NTUPlace3 smooth approximation used by
+               DREAMPlace and RePlAce.]
+
+  SideEffects []
+
+***********************************************************************/
+static double Phys_PlaceLse( int * pNetStart, int * pNetPins, int nNets,
+                             double * pAX, double * pAY, Vec_Int_t * vFreeIdx,
+                             double Gamma, double * pGx, double * pGy )
+{
+    double Inv = 1.0 / Gamma, Wl = 0.0;
+    int net, j;
+    for ( net = 0; net < nNets; net++ )
+    {
+        int Start = pNetStart[net], End = pNetStart[net+1];
+        double xmin = 1e300, xmax = -1e300, ymin = 1e300, ymax = -1e300;
+        double sx = 0.0, snx = 0.0, sy = 0.0, sny = 0.0;
+        if ( End - Start < 2 )
+            continue;
+        for ( j = Start; j < End; j++ )
+        {
+            int nd = pNetPins[j];
+            xmin = xmin < pAX[nd] ? xmin : pAX[nd];
+            xmax = xmax > pAX[nd] ? xmax : pAX[nd];
+            ymin = ymin < pAY[nd] ? ymin : pAY[nd];
+            ymax = ymax > pAY[nd] ? ymax : pAY[nd];
+        }
+        for ( j = Start; j < End; j++ )
+        {
+            int nd = pNetPins[j];
+            sx  += exp( (pAX[nd] - xmax) * Inv );
+            snx += exp( (xmin - pAX[nd]) * Inv );
+            sy  += exp( (pAY[nd] - ymax) * Inv );
+            sny += exp( (ymin - pAY[nd]) * Inv );
+        }
+        Wl += Gamma * (log(sx) + log(snx)) + xmax - xmin
+            + Gamma * (log(sy) + log(sny)) + ymax - ymin;
+        for ( j = Start; j < End; j++ )
+        {
+            int nd = pNetPins[j];
+            int f = Vec_IntEntry( vFreeIdx, nd );
+            if ( f < 0 )
+                continue;
+            pGx[f] += exp( (pAX[nd] - xmax) * Inv ) / sx - exp( (xmin - pAX[nd]) * Inv ) / snx;
+            pGy[f] += exp( (pAY[nd] - ymax) * Inv ) / sy - exp( (ymin - pAY[nd]) * Inv ) / sny;
+        }
+    }
+    return Wl;
+}
+
+/* gradient of wirelength + lambda * density at the given free positions */
+static double Phys_PlaceEval( Phys_PlaceBins_t * b, Phys_PNode_t * pNodes, int nNodes, int nFree,
+                              Vec_Int_t * vFree, Vec_Int_t * vFreeIdx,
+                              int * pNetStart, int * pNetPins, int nNets,
+                              double * pAX, double * pAY, double * pX, double * pY,
+                              double Gamma, double Lambda,
+                              double * pGx, double * pGy,
+                              double * pOverflow, double * pMaxDens )
+{
+    int k, iNode;
+    double Wl;
+    for ( iNode = 0; iNode < nNodes; iNode++ )
+        if ( pNodes[iNode].Fixed )
+        {
+            pAX[iNode] = (double)pNodes[iNode].X;
+            pAY[iNode] = (double)pNodes[iNode].Y;
+        }
+    for ( k = 0; k < nFree; k++ )
+    {
+        iNode = Vec_IntEntry( vFree, k );
+        pAX[iNode] = pX[k];
+        pAY[iNode] = pY[k];
+    }
+    memset( pGx, 0, sizeof(double)*nFree );
+    memset( pGy, 0, sizeof(double)*nFree );
+    Wl = Phys_PlaceLse( pNetStart, pNetPins, nNets, pAX, pAY, vFreeIdx, Gamma, pGx, pGy );
+    Phys_PlaceDensityMap( b, pNodes, nFree, vFree, pX, pY, b->pDens );
+    *pOverflow = Phys_PlaceOverflow( b, b->pDens, pMaxDens );
+    if ( Lambda != 0.0 )
+    {
+        Phys_PlaceField( b );
+        Phys_PlaceDensityForce( b, pNodes, nFree, vFree, pX, pY, Lambda, pGx, pGy );
+    }
+    return Wl;
+}
+
+/* keeps every free cell inside the core */
+static void Phys_PlaceClamp( double * pX, double * pY, Phys_PNode_t * pNodes, Vec_Int_t * vFree,
+                             int nFree, double x0, double y0, double W, double H )
+{
+    int k, iNode;
+    for ( k = 0; k < nFree; k++ )
+    {
+        double HalfW, HalfH;
+        iNode = Vec_IntEntry( vFree, k );
+        HalfW = 0.5 * (double)pNodes[iNode].W;
+        HalfH = 0.5 * (double)pNodes[iNode].H;
+        if ( pX[k] < x0 + HalfW ) pX[k] = x0 + HalfW;
+        if ( pX[k] > x0 + W - HalfW ) pX[k] = x0 + W - HalfW;
+        if ( pY[k] < y0 + HalfH ) pY[k] = y0 + HalfH;
+        if ( pY[k] > y0 + H - HalfH ) pY[k] = y0 + H - HalfH;
+    }
+}
+
+/* the smoothing parameter: held at Gamma0 for the first fifth of the run,
+   while the density force spreads the cells, then annealed linearly */
+static double Phys_PlaceGamma( double Gamma0, double GammaEnd, int itGlobal, int nTot )
+{
+    int Hold = nTot / 5;
+    double t;
+    if ( itGlobal <= Hold || nTot <= Hold )
+        return Gamma0;
+    t = (double)(itGlobal - Hold) / (double)(nTot - Hold);
+    if ( t > 1.0 ) t = 1.0;
+    return Gamma0 + (GammaEnd - Gamma0) * t;
+}
+
+
+/**Function*************************************************************
+
+  Synopsis    [Nonlinear global placement with Nesterov acceleration]
+
+  Description [Minimizes the log-sum-exp wirelength plus the density
+               penalty with Nesterov's accelerated gradient method and a
+               Barzilai-Borwein step size, following DREAMPlace's
+               NesterovAcceleratedGradientOptimizer.  The smoothing
+               parameter gamma decays linearly from a few bins to a
+               fraction of a bin, and the density weight starts from the
+               ratio of the two gradient norms and is doubled whenever
+               the density overflow stops improving.  The iterations are
+               grouped into stages that share a weight; positions are
+               clamped to the core after every step.]
+
+  SideEffects []
+
+***********************************************************************/
+static void Phys_PlaceNesterov( Phys_Man_t * p, Phys_PNode_t * pNodes, int nNodes, int nFree,
+                                Vec_Int_t * vFree, Vec_Int_t * vFreeIdx,
+                                int * pNetStart, int * pNetPins, int nNets,
+                                double x0, double y0, double W, double H, double TotalArea,
+                                double Dbu, Phys_PlacePars_t * pPars,
+                                double * pOverflowOut, double * pMaxDensOut )
+{
+    Phys_PlaceBins_t Bins, * b = &Bins;
+    double * pX, * pY, * pUx, * pUy, * pVx, * pVy, * pGx, * pGy, * pDx, * pDy;
+    double * pAX, * pAY;
+    double Gamma0, GammaEnd, Gamma, Lambda, NormWL, NormD, MaxGrad, MaxDim;
+    double Step, Alpha, A, MaxMove, Overflow, MaxDens, Wl, BestOverflow;
+    int k, it, itGlobal, Stage, nStage, nInner, nTot, iNode, fStop, fConverged, fLambdaChanged;
+
+    Phys_PlaceBinsInit( b, p, x0, y0, W, H, (double)pPars->Util, TotalArea );
+    pX  = ABC_ALLOC( double, nFree );
+    pY  = ABC_ALLOC( double, nFree );
+    pUx = ABC_ALLOC( double, nFree );
+    pUy = ABC_ALLOC( double, nFree );
+    pVx = ABC_ALLOC( double, nFree );
+    pVy = ABC_ALLOC( double, nFree );
+    pGx = ABC_ALLOC( double, nFree );
+    pGy = ABC_ALLOC( double, nFree );
+    pDx = ABC_ALLOC( double, nFree );
+    pDy = ABC_ALLOC( double, nFree );
+    pAX = ABC_ALLOC( double, nNodes );
+    pAY = ABC_ALLOC( double, nNodes );
+    for ( k = 0; k < nNodes; k++ )
+        if ( pNodes[k].Fixed )
+        {
+            pAX[k] = (double)pNodes[k].X;
+            pAY[k] = (double)pNodes[k].Y;
+        }
+    for ( k = 0; k < nFree; k++ )
+    {
+        iNode = Vec_IntEntry( vFree, k );
+        pX[k] = (double)pNodes[iNode].X;
+        pY[k] = (double)pNodes[iNode].Y;
+    }
+    Phys_PlaceClamp( pX, pY, pNodes, vFree, nFree, x0, y0, W, H );
+    MaxDim   = W > H ? W : H;
+    Gamma0   = 4.0 * b->BinW;
+    GammaEnd = 0.25 * b->BinW;
+    if ( GammaEnd < 0.5 * (double)p->SiteW )
+        GammaEnd = 0.5 * (double)p->SiteW;
+    if ( GammaEnd > Gamma0 )
+        GammaEnd = Gamma0;
+    /* start from a small fraction of the weight that balances the two
+       gradient norms; the schedule below raises it as needed */
+    Wl = Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, nNets,
+                         pAX, pAY, pX, pY, Gamma0, 0.0, pGx, pGy, &Overflow, &MaxDens );
+    NormWL = 0.0;
+    for ( k = 0; k < nFree; k++ )
+        NormWL += pGx[k]*pGx[k] + pGy[k]*pGy[k];
+    Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, nNets,
+                    pAX, pAY, pX, pY, Gamma0, 1.0, pDx, pDy, &Overflow, &MaxDens );
+    NormD = 0.0;
+    for ( k = 0; k < nFree; k++ )
+        NormD += pDx[k]*pDx[k] + pDy[k]*pDy[k];
+    if ( NormD > 0.0 && NormWL > 0.0 && isfinite(NormWL) && isfinite(NormD) )
+        Lambda = sqrt( NormWL / NormD );
+    else
+        Lambda = 1.0;
+    if ( !(Lambda > 0.0) || !isfinite(Lambda) )
+        Lambda = 1.0;
+    /* one small gradient step gives the previous iterate for the first
+       Barzilai-Borwein estimate */
+    Wl = Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, nNets,
+                         pAX, pAY, pX, pY, Gamma0, Lambda, pGx, pGy, &Overflow, &MaxDens );
+    MaxGrad = 0.0;
+    for ( k = 0; k < nFree; k++ )
+    {
+        double G = sqrt( pGx[k]*pGx[k] + pGy[k]*pGy[k] );
+        if ( G > MaxGrad ) MaxGrad = G;
+    }
+    Step = MaxGrad > 0.0 ? 0.01 * MaxDim / MaxGrad : 0.0;
+    for ( k = 0; k < nFree; k++ )
+    {
+        pVx[k] = pX[k] - Step * pGx[k];
+        pVy[k] = pY[k] - Step * pGy[k];
+        pUx[k] = pX[k];
+        pUy[k] = pY[k];
+    }
+    Phys_PlaceClamp( pVx, pVy, pNodes, vFree, nFree, x0, y0, W, H );
+    Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, nNets,
+                    pAX, pAY, pVx, pVy, Gamma0, Lambda, pDx, pDy, &Overflow, &MaxDens );
+    Alpha = 0.0;
+    {
+        double Num = 0.0, Den = 0.0;
+        for ( k = 0; k < nFree; k++ )
+        {
+            double Sx = pX[k] - pVx[k], Sy = pY[k] - pVy[k];
+            double Yx = pGx[k] - pDx[k], Yy = pGy[k] - pDy[k];
+            Num += Sx*Sx + Sy*Sy;
+            Den += Yx*Yx + Yy*Yy;
+        }
+        Alpha = Den > 1e-300 ? sqrt( Num / Den ) : Step;
+    }
+    if ( !(Alpha > 0.0) || !isfinite(Alpha) )
+        Alpha = MaxDim;
+    if ( Alpha > MaxDim )
+        Alpha = MaxDim;
+    A = 1.0;
+    nTot   = pPars->nIterNest;
+    nStage = 20;
+    if ( nStage > nTot )
+        nStage = nTot;
+    nInner = nTot / nStage;
+    if ( nInner < 1 )
+        nInner = 1;
+    if ( pPars->fVerbose )
+        fprintf( stdout, "Placement: nonlinear placement on a %d x %d bin grid "
+                 "(%.1f x %.1f um bins), %d stages of %d iterations, initial lambda %.3g.\n",
+                 b->nBinsX, b->nBinsY, b->BinW / Dbu, b->BinH / Dbu, nStage, nInner, Lambda );
+    Gamma      = Gamma0;
+    itGlobal   = 0;
+    fStop      = 0;
+    fLambdaChanged = 0;
+    /* the overflow of the best iterate so far, used to decide whether the
+       density weight still buys any spreading */
+    BestOverflow = 1e30;
+    for ( Stage = 0; Stage < nStage && !fStop && itGlobal < nTot; Stage++ )
+    {
+        fConverged = 0;
+        /* a new density weight invalidates the gradient and the difference
+           pair the Barzilai-Borwein step is built from */
+        if ( Stage > 0 && fLambdaChanged )
+        {
+            Gamma = Phys_PlaceGamma( Gamma0, GammaEnd, itGlobal, nTot );
+            Wl = Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, nNets,
+                                 pAX, pAY, pX, pY, Gamma, Lambda, pGx, pGy, &Overflow, &MaxDens );
+            for ( k = 0; k < nFree; k++ )
+            {
+                pVx[k] = pX[k];
+                pVy[k] = pY[k];
+                pDx[k] = pGx[k];
+                pDy[k] = pGy[k];
+            }
+        }
+        for ( it = 0; it < nInner && itGlobal < nTot; it++, itGlobal++ )
+        {
+            double SS = 0.0, SY = 0.0, YY = 0.0, BB, Lip, ANext, Coef;
+            double MaxG = 0.0;
+            for ( k = 0; k < nFree; k++ )
+            {
+                double Sx = pX[k] - pVx[k], Sy = pY[k] - pVy[k];
+                double Yx = pGx[k] - pDx[k], Yy = pGy[k] - pDy[k];
+                SS += Sx*Sx + Sy*Sy;
+                SY += Sx*Yx + Sy*Yy;
+                YY += Yx*Yx + Yy*Yy;
+            }
+            /* Barzilai-Borwein short step with DREAMPlace's fallbacks */
+            BB = YY > 1e-300 ? SY / YY : 0.0;
+            if ( !(BB > 0.0) || !isfinite(BB) )
+            {
+                Lip = YY > 1e-300 ? sqrt( SS / YY ) : Alpha;
+                BB = Lip < Alpha ? Lip : Alpha;
+            }
+            if ( !(BB > 0.0) || !isfinite(BB) )
+                BB = Alpha;
+            for ( k = 0; k < nFree; k++ )
+            {
+                double G = sqrt( pGx[k]*pGx[k] + pGy[k]*pGy[k] );
+                if ( G > MaxG ) MaxG = G;
+            }
+            /* keep the largest-gradient cell from jumping across a bin:
+               a step that big cannot be trusted by the bin-based density
+               model */
+            if ( MaxG > 0.0 )
+            {
+                double StepHi = 0.25 * b->BinW / MaxG;
+                if ( BB > StepHi ) BB = StepHi;
+            }
+            ANext = 0.5 * (1.0 + sqrt( 4.0*A*A + 1.0 ));
+            Coef  = (A - 1.0) / ANext;
+            MaxMove = 0.0;
+            for ( k = 0; k < nFree; k++ )
+            {
+                double OldUx = pUx[k], OldUy = pUy[k];
+                double NewUx = pX[k] - BB * pGx[k];
+                double NewUy = pY[k] - BB * pGy[k];
+                double NewVx = NewUx + Coef * (NewUx - OldUx);
+                double NewVy = NewUy + Coef * (NewUy - OldUy);
+                double MoveX = fabs( NewVx - pX[k] ), MoveY = fabs( NewVy - pY[k] );
+                if ( MoveX > MaxMove ) MaxMove = MoveX;
+                if ( MoveY > MaxMove ) MaxMove = MoveY;
+                pUx[k] = NewUx;
+                pUy[k] = NewUy;
+                pVx[k] = pX[k];
+                pVy[k] = pY[k];
+                pDx[k] = pGx[k];
+                pDy[k] = pGy[k];
+                pX[k]  = NewVx;
+                pY[k]  = NewVy;
+            }
+            Phys_PlaceClamp( pX, pY, pNodes, vFree, nFree, x0, y0, W, H );
+            A     = ANext;
+            Alpha = BB;
+            Gamma = Phys_PlaceGamma( Gamma0, GammaEnd, itGlobal, nTot );
+            Wl = Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, nNets,
+                                 pAX, pAY, pX, pY, Gamma, Lambda, pGx, pGy, &Overflow, &MaxDens );
+            if ( pPars->fVerbose )
+                fprintf( stdout, "Placement: iter %4d (stage %2d): gamma %.3f um, lambda %.3g, "
+                         "overflow %.4f, max density %.3f, lse wirelength %.1f um, "
+                         "step %.3g, max |g| %.3g, max move %.1f DBU.\n",
+                         itGlobal, Stage, Gamma / Dbu, Lambda, Overflow, MaxDens, Wl / Dbu,
+                         BB, MaxG, MaxMove );
+            if ( MaxMove < 0.01 * (double)p->SiteW )
+            {
+                fConverged = 1;
+                break;
+            }
+        }
+        /* refresh the overflow of the final iterate of this stage */
+        Phys_PlaceDensityMap( b, pNodes, nFree, vFree, pX, pY, b->pDens );
+        Overflow = Phys_PlaceOverflow( b, b->pDens, &MaxDens );
+        if ( pPars->fVerbose )
+        {
+            int t, tMax = 0, nBins = b->nBinsX * b->nBinsY;
+            double BinX, BinY;
+            for ( t = 1; t < nBins; t++ )
+                if ( b->pDens[t] > b->pDens[tMax] )
+                    tMax = t;
+            BinX = (b->X0 + ((tMax / b->nBinsY) + 0.5) * b->BinW) / Dbu;
+            BinY = (b->Y0 + ((tMax % b->nBinsY) + 0.5) * b->BinH) / Dbu;
+            fprintf( stdout, "Placement: stage %d summary: gamma %.2f um, lambda %.3g, "
+                     "overflow %.3f, max density %.2f at (%.1f, %.1f) um, lse wirelength %.1f um.\n",
+                     Stage, Gamma / Dbu, Lambda, Overflow, MaxDens, BinX, BinY, Wl / Dbu );
+        }
+        fLambdaChanged = 0;
+        if ( Overflow < pPars->StopOverflow * 0.5 )
+            ;   /* already spread enough: keep the weight */
+        else if ( Overflow < BestOverflow * 0.98 )
+            BestOverflow = Overflow;
+        else
+        {
+            Lambda *= 2.0;
+            BestOverflow = Overflow;
+            fLambdaChanged = 1;
+        }
+        /* even when the density is fine, keep going until the smoothing
+           parameter is nearly annealed, because that is what tightens the
+           wirelength */
+        if ( Overflow < pPars->StopOverflow && itGlobal * 10 >= nTot * 9 )
+            fStop = 1;
+        if ( fConverged && Overflow < pPars->StopOverflow )
+            fStop = 1;
+    }
+    for ( k = 0; k < nFree; k++ )
+    {
+        iNode = Vec_IntEntry( vFree, k );
+        pNodes[iNode].X = (float)pX[k];
+        pNodes[iNode].Y = (float)pY[k];
+    }
+    if ( pOverflowOut != NULL ) *pOverflowOut = Overflow;
+    if ( pMaxDensOut  != NULL ) *pMaxDensOut  = MaxDens;
+    ABC_FREE( pX ); ABC_FREE( pY );
+    ABC_FREE( pUx ); ABC_FREE( pUy );
+    ABC_FREE( pVx ); ABC_FREE( pVy );
+    ABC_FREE( pGx ); ABC_FREE( pGy );
+    ABC_FREE( pDx ); ABC_FREE( pDy );
+    ABC_FREE( pAX ); ABC_FREE( pAY );
+    Phys_PlaceBinsFree( b );
+}
+
+
+/**Function*************************************************************
+
   Synopsis    [Runs analytical placement]
 
   Description [Returns 1 on success and 0 on failure.]
@@ -754,9 +1473,14 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         fprintf( stdout, "Placement: the core aspect ratio %.3f should be positive.\n", pPars->Aspect );
         return 0;
     }
-    if ( pPars->nIterCG < 1 || pPars->nIterRefine < 0 )
+    if ( pPars->nIterCG < 1 || pPars->nIterNest < 1 )
     {
-        fprintf( stdout, "Placement: the number of conjugate-gradient rounds should be positive and the number of refinement rounds non-negative.\n" );
+        fprintf( stdout, "Placement: the numbers of conjugate-gradient and nonlinear iterations should be positive.\n" );
+        return 0;
+    }
+    if ( pPars->StopOverflow < 0.0f || pPars->StopOverflow >= 1.0f )
+    {
+        fprintf( stdout, "Placement: the stopping overflow %.3f should be in [0, 1).\n", pPars->StopOverflow );
         return 0;
     }
     if ( p->vObjToCell == NULL || Vec_PtrSize(p->vObjToCell) < nObjs )
@@ -980,100 +1704,44 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     Phys_PlaceScale( pNodes, vFree, vSolX, vSolY, x0, y0, W, H, TotalArea, pPars->Util );
     if ( pPars->fVerbose )
         Phys_PlaceReport( "after scale:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nObjs, Dbu );
-    /* Legalize the equalized solution. */
+    /* Build the CSR net list of the nonlinear placement.  The driver of
+       every net comes first, followed by its sinks; the pins index into
+       the node array, so the fixed terminals are addressed the same way
+       as the movable cells. */
+    {
+        Vec_Int_t * vNetStart = Vec_IntAlloc( nObjs + 1 );
+        Vec_Int_t * vNetPins  = Vec_IntAlloc( 4 * nObjs + 16 );
+        double Overflow = 0.0, MaxDens = 0.0;
+        Vec_IntPush( vNetStart, 0 );
+        for ( q = 0; q < nObjs; q++ )
+        {
+            Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
+            int iDriver;
+            if ( vList == NULL )
+                continue;
+            iDriver = Vec_IntEntry( vNode2Idx, q );
+            if ( iDriver < 0 )
+                continue;
+            Vec_IntPush( vNetPins, iDriver );
+            Vec_IntAppend( vNetPins, vList );
+            Vec_IntPush( vNetStart, Vec_IntSize(vNetPins) );
+        }
+        Phys_PlaceNesterov( p, pNodes, nNodes, nFree, vFree, vFreeIdx,
+                            Vec_IntArray(vNetStart), Vec_IntArray(vNetPins), Vec_IntSize(vNetStart)-1,
+                            x0, y0, W, H, TotalArea, Dbu, pPars, &Overflow, &MaxDens );
+        if ( pPars->fVerbose )
+            fprintf( stdout, "Placement: nonlinear placement over %d nets finished at "
+                     "overflow %.3f and maximum bin density %.2f.\n",
+                     Vec_IntSize(vNetStart)-1, Overflow, MaxDens );
+        Vec_IntFree( vNetStart );
+        Vec_IntFree( vNetPins );
+    }
+    if ( pPars->fVerbose )
+        Phys_PlaceReport( "after nonlinear:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nObjs, Dbu );
+    /* Legalize the spread solution. */
     nOverlaps = Phys_PlaceLegalize( p, pNodes, vFree, x0, y0, W, H, pPars->fVerbose );
     if ( pPars->fVerbose )
         Phys_PlaceReport( "after legal:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nObjs, Dbu );
-    /* Wirelength refinement.  Spreading alone cannot recover the
-       wirelength that the density constraint destroys, and solving only
-       for wirelength collapses the placement back into the compact
-       quadratic blob, so alternate the two: solve the quadratic problem
-       with a proximal term that anchors every cell to where it currently
-       is, then legalize.  The anchor weight decays geometrically, which
-       lets the cells gradually trade density for connectivity, and the
-       best legal placement seen is kept, so the refinement can only make
-       the result better.  A round that pushes any row to the occupancy
-       limit is rejected without retrying, because a smaller anchor weight
-       would only pack the rows further. */
-    {
-        double BestHpwl = Phys_PlaceHpwlFree( pNodes, vNode2Idx, vFreeIdx, vSinks, nObjs ) / Dbu;
-        Vec_Flt_t * vBestX = Vec_FltStart( nFree );
-        Vec_Flt_t * vBestY = Vec_FltStart( nFree );
-        float OccLimit = 0.95f;
-        int iRound, nFail = 0;
-        float Lambda = 50.0f * AvgDiag;
-        Vec_IntForEachEntry( vFree, i, k )
-        {
-            Vec_FltWriteEntry( vBestX, k, pNodes[i].X );
-            Vec_FltWriteEntry( vBestY, k, pNodes[i].Y );
-        }
-        for ( iRound = 0; iRound < pPars->nIterRefine; iRound++ )
-        {
-            double CurHpwl;
-            float MaxOcc, LambdaUsed = Lambda;
-            Vec_IntForEachEntry( vFree, i, k )
-            {
-                Vec_FltWriteEntry( vRefX, k, pNodes[i].X );
-                Vec_FltWriteEntry( vRefY, k, pNodes[i].Y );
-                Vec_FltWriteEntry( vSolX, k, pNodes[i].X );
-                Vec_FltWriteEntry( vSolY, k, pNodes[i].Y );
-            }
-            Phys_PlaceSolve( nFree, vDiag, vEI, vEJ, vEW, vBx, vRefX, Lambda, vSolX, pPars->nIterCG );
-            Phys_PlaceSolve( nFree, vDiag, vEI, vEJ, vEW, vBy, vRefY, Lambda, vSolY, pPars->nIterCG );
-            Vec_IntForEachEntry( vFree, i, k )
-            {
-                pNodes[i].X = Vec_FltEntry( vSolX, k );
-                pNodes[i].Y = Vec_FltEntry( vSolY, k );
-            }
-            Phys_PlaceLegalize( p, pNodes, vFree, x0, y0, W, H, 0 );
-            CurHpwl = Phys_PlaceHpwlFree( pNodes, vNode2Idx, vFreeIdx, vSinks, nObjs ) / Dbu;
-            MaxOcc  = Phys_PlaceMaxRowOcc( pNodes, vFree, y0, H, p->SiteH, W );
-            if ( CurHpwl < BestHpwl * (1.0 - 1e-4) && MaxOcc <= OccLimit )
-            {
-                BestHpwl = CurHpwl;
-                Vec_IntForEachEntry( vFree, i, k )
-                {
-                    Vec_FltWriteEntry( vBestX, k, pNodes[i].X );
-                    Vec_FltWriteEntry( vBestY, k, pNodes[i].Y );
-                }
-                Lambda *= 0.7f;
-                nFail = 0;
-            }
-            else
-            {
-                double Rel = (CurHpwl - BestHpwl) / BestHpwl;
-                Vec_IntForEachEntry( vFree, i, k )
-                {
-                    pNodes[i].X = Vec_FltEntry( vBestX, k );
-                    pNodes[i].Y = Vec_FltEntry( vBestY, k );
-                }
-                if ( MaxOcc > OccLimit )
-                {
-                    if ( pPars->fVerbose )
-                        fprintf( stdout, "Placement: refinement stopped at round %d: "
-                                 "row occupancy %.2f exceeds %.2f.\n", iRound, MaxOcc, OccLimit );
-                    break;
-                }
-                Lambda *= 0.7f;
-                /* A round that legalizes back to the same placement means
-                   the anchor is still too stiff, not that the schedule is
-                   exhausted, so keep decaying the anchor instead of
-                   counting it against the failure budget. */
-                if ( Rel > 1e-4 && ++nFail >= 3 )
-                    break;
-            }
-            if ( pPars->fVerbose )
-            {
-                char pStr[72];
-                sprintf( pStr, "after round %d (lambda %.0f, row occ %.2f):", iRound, LambdaUsed, MaxOcc );
-                Phys_PlaceReport( pStr, pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nObjs, Dbu );
-            }
-        }
-        Vec_FltFree( vBestX );
-        Vec_FltFree( vBestY );
-        if ( pPars->fVerbose )
-            fprintf( stdout, "Placement: refinement finished at wirelength %.1f um.\n", BestHpwl );
-    }
     /* save the result */
     Phys_ManClearPlace( p );
     p->vObjX = Vec_IntStartFull( nObjs );
