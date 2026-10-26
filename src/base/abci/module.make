@@ -38,6 +38,7 @@ SRC +=    src/base/abci/abc.c \
     src/base/abci/abcMfs.c \
     src/base/abci/abcMini.c \
     src/base/abci/abcMiter.c \
+    src/base/abci/abcPhys.c \
     src/base/abci/abcMulti.c \
     src/base/abci/abcNtbdd.c \
     src/base/abci/abcNpn.c \

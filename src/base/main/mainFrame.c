@@ -23,6 +23,8 @@
 #include "bool/dec/dec.h"
 #include "map/if/if.h"
 #include "aig/miniaig/ndr.h"
+#include "phys/phys.h"
+#include "phys/physMan.h"
 
 #ifdef ABC_USE_CUDD
 #include "bdd/extrab/extraBdd.h"
@@ -133,8 +135,12 @@ void        Abc_FrameSetBridgeMode()                         { if ( s_GlobalFram
 
 char *      Abc_FrameReadDrivingCell()                       { return s_GlobalFrame->pDrivingCell;    }              
 float       Abc_FrameReadMaxLoad()                           { return s_GlobalFrame->MaxLoad;         }      
-void        Abc_FrameSetDrivingCell( char * pName )          { ABC_FREE(s_GlobalFrame->pDrivingCell); s_GlobalFrame->pDrivingCell   = pName; }      
-void        Abc_FrameSetMaxLoad( float Load )                { s_GlobalFrame->MaxLoad = Load;         }      
+void        Abc_FrameSetDrivingCell( char * pName )          { ABC_FREE(s_GlobalFrame->pDrivingCell); s_GlobalFrame->pDrivingCell   = pName; }
+void        Abc_FrameSetMaxLoad( float Load )                { s_GlobalFrame->MaxLoad = Load;         }
+float       Abc_FrameReadSignalRes()                         { return s_GlobalFrame->SignalRes;       }
+float       Abc_FrameReadSignalCap()                         { return s_GlobalFrame->SignalCap;       }
+void        Abc_FrameSetSignalRes( float Res )               { s_GlobalFrame->SignalRes = Res;        }
+void        Abc_FrameSetSignalCap( float Cap )               { s_GlobalFrame->SignalCap = Cap;        }
 
 int *       Abc_FrameReadArrayMapping( Abc_Frame_t * pAbc )  { return pAbc->pArray;                                            }
 void        Abc_FrameSetArrayMapping( int * p )              { ABC_FREE( s_GlobalFrame->pArray ); s_GlobalFrame->pArray = p;   }      
@@ -265,6 +271,12 @@ void Abc_FrameDeallocate( Abc_Frame_t * p )
     Ndr_Delete( p->pNdr );
     ABC_FREE( p->pNdrArray );
     Abc_FrameStoreStop( p );
+
+    if ( p->pLef )
+        Phys_LefTechFree( (Phys_LefTech_t **)&p->pLef );
+    if ( p->pPhysLib )
+        Phys_LibFree( (Phys_Lib_t **)&p->pPhysLib );
+    Phys_ManStop( (Phys_Man_t **)&p->pPhysMan );
 
     Gia_ManStopP( &p->pGiaMiniAig );
     Gia_ManStopP( &p->pGiaMiniLut );

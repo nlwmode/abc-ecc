@@ -846,9 +846,50 @@ static inline int Nf_CutArea( Nf_Man_t * p, int nLeaves )
         return 0;
     return nLeaves + p->pPars->nAreaTuner;
 }
+/* Physical spread of a set of cut leaves, used when the caller supplies
+   per-object coordinates through Jf_Par_t (see &phys_map).  The arrays are
+   indexed by object id and must cover the mapped network.  The spread is
+   the half-perimeter of the bounding box of the leaves, in um. */
+static inline float Nf_CutPhysSpreadLeaves( Nf_Man_t * p, int * pLeaves, int nLeaves )
+{
+    float * pX = p->pPars->pPhysX;
+    float * pY = p->pPars->pPhysY;
+    float xMin, xMax, yMin, yMax, x, y;
+    int i;
+    if ( pX == NULL || pY == NULL || nLeaves < 2 )
+        return 0.0f;
+    xMin = xMax = pX[ pLeaves[0] ];
+    yMin = yMax = pY[ pLeaves[0] ];
+    for ( i = 1; i < nLeaves; i++ )
+    {
+        x = pX[ pLeaves[i] ];
+        y = pY[ pLeaves[i] ];
+        xMin = Abc_MinFloat( xMin, x );  xMax = Abc_MaxFloat( xMax, x );
+        yMin = Abc_MinFloat( yMin, y );  yMax = Abc_MaxFloat( yMax, y );
+    }
+    return (xMax - xMin) + (yMax - yMin);
+}
+static inline float Nf_CutPhysSpread( Nf_Man_t * p, Nf_Cut_t * pCut )
+{
+    return Nf_CutPhysSpreadLeaves( p, pCut->pLeaves, pCut->nLeaves );
+}
+/* The physical terms are added to the cut cost in the units of the cost
+   itself: the spread, in um, enters the area-flow as the area of as many
+   extra gates, and the delay as ps of wire delay per um, converted to the
+   fixed-point delay units (1 ps = 1000). */
+static inline float Nf_CutPhysFlow( Nf_Man_t * p, int * pLeaves, int nLeaves )
+{
+    return p->pPars->pPhysX ? p->pPars->PhysFlowW * Nf_CutPhysSpreadLeaves(p, pLeaves, nLeaves) : 0.0f;
+}
+static inline int Nf_CutPhysDelay( Nf_Man_t * p, int * pLeaves, int nLeaves )
+{
+    if ( p->pPars->pPhysX == NULL )
+        return 0;
+    return (int)( 1000.0f * p->pPars->PhysDelayW * Nf_CutPhysSpreadLeaves(p, pLeaves, nLeaves) + 0.5f );
+}
 static inline void Nf_CutParams( Nf_Man_t * p, Nf_Cut_t * pCut, float FlowRefs )
 {
-    int i, nLeaves = pCut->nLeaves; 
+    int i, nLeaves = pCut->nLeaves;
     assert( nLeaves <= p->pPars->nLutSize );
     pCut->Delay = 0;
     pCut->Flow  = 0;
@@ -859,6 +900,8 @@ static inline void Nf_CutParams( Nf_Man_t * p, Nf_Cut_t * pCut, float FlowRefs )
     }
     pCut->Delay += (int)(nLeaves > 1);
     pCut->Flow = (pCut->Flow + Nf_CutArea(p, nLeaves)) / FlowRefs;
+    pCut->Flow  += Nf_CutPhysFlow( p, pCut->pLeaves, nLeaves );
+    pCut->Delay += Nf_CutPhysDelay( p, pCut->pLeaves, nLeaves );
 }
 void Nf_ObjMergeOrder( Nf_Man_t * p, int iObj )
 {
@@ -1191,6 +1234,13 @@ void Nf_ManCutMatchOne( Nf_Man_t * p, int iObj, int * pCut, int * pCutSet )
         }
         if ( k < nFans )
             continue;
+        /* Physical-awareness: the leaves of this cut sit somewhere in the
+           placement, and a match that draws them together is cheaper both
+           in area flow and in wire delay.  The penalty depends only on the
+           cut, not on the gate, so it is added once before the matches of
+           the cut are compared. */
+        AreaF += Nf_CutPhysFlow( p, pFans, nFans );
+        Delay += Nf_CutPhysDelay( p, pFans, nFans );
         // select best Cfgch
         if ( pD->D > Delay )
         {
@@ -1307,6 +1357,23 @@ void Nf_ManCutMatch( Nf_Man_t * p, int iObj )
         assert( Nf_CutSize(pCut) <= p->pPars->nLutSize );
         assert( Abc_Lit2Var(Nf_CutFunc(pCut)) < Vec_WecSize(p->vTt2Match) );
         Nf_ManCutMatchOne( p, iObj, pCut, pCutSet );
+    }
+    /* The physical penalty steers the choice among the cuts of this node,
+       but it is not area and must not be inherited by the fanouts through
+       the area flow, where it would be amplified at every level of logic
+       and would drive the mapper towards shallow implementations with
+       large gates.  Remove the penalty of the chosen cut again, so the
+       area flow propagated upwards is the true one. */
+    if ( p->pPars->pPhysX != NULL )
+    {
+        Nf_Mat_t * pMs[4] = { pDp, pDn, pAp, pAn };
+        int m;
+        for ( m = 0; m < 4; m++ )
+            if ( pMs[m]->F < (float)1e32 )
+            {
+                int * pCutM = Nf_CutFromHandle( pCutSet, pMs[m]->CutH );
+                pMs[m]->F -= Nf_CutPhysFlow( p, Nf_CutLeaves(pCutM), Nf_CutSize(pCutM) );
+            }
     }
 
 /*
@@ -1893,6 +1960,9 @@ void Nf_ManElaBestMatchOne( Nf_Man_t * p, int iObj, int c, int * pCut, int * pCu
         pMb->Cfg.fCompl = 0;
         // compute area
         pMb->F = Scl_Int2Flt((int)Nf_MatchRefArea(p, iObj, c, pMb, Required));
+        // the area-recovery rounds have to keep the physical preference,
+        // otherwise they undo what the cut selection just optimized
+        pMb->F += Nf_CutPhysFlow( p, pFans, nFans );
         // compare
         if ( pRes->F > pMb->F + NF_EPSILON || (pRes->F > pMb->F - NF_EPSILON && pRes->D > pMb->D) )
             *pRes = *pMb;

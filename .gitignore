@@ -67,3 +67,6 @@ tags
 /cmake
 /cscope
 abc.history
+
+# physical-synthesis debug workspace (test/phys_flow.sh)
+phys_ws/

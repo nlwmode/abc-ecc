@@ -24,6 +24,7 @@
 #include "bool/lms/lms.h"
 #include "base/main/main.h"
 #include "base/main/mainInt.h"
+#include "base/abci/abcPhys.h"
 #include "proof/fraig/fraig.h"
 #include "opt/fxu/fxu.h"
 #include "opt/fxch/Fxch.h"
@@ -1285,6 +1286,20 @@ void Abc_Init( Abc_Frame_t * pAbc )
 
     Cmd_CommandAdd( pAbc, "Various",      "save",          Abc_CommandAbcSave,          0 );
     Cmd_CommandAdd( pAbc, "Various",      "load",          Abc_CommandAbcLoad,          0 );
+
+    Cmd_CommandAdd( pAbc, "Physical synthesis", "read_tech_lef", Abc_CommandReadTechLef, 0 );
+    Cmd_CommandAdd( pAbc, "Physical synthesis", "read_lef",      Abc_CommandReadLef,     0 );
+    Cmd_CommandAdd( pAbc, "Physical synthesis", "read_liberty",  Abc_CommandReadLiberty, 0 );
+    Cmd_CommandAdd( pAbc, "Physical synthesis", "set_signal_res", Abc_CommandSetSignalRes, 0 );
+    Cmd_CommandAdd( pAbc, "Physical synthesis", "set_signal_cap", Abc_CommandSetSignalCap, 0 );
+    Cmd_CommandAdd( pAbc, "Physical synthesis", "print_phys",    Abc_CommandPrintPhys,   0 );
+    Cmd_CommandAdd( pAbc, "Physical synthesis", "&phys_start",   Abc_CommandPhysStart,   0 );
+    Cmd_CommandAdd( pAbc, "Physical synthesis", "&phys_end",     Abc_CommandPhysEnd,     0 );
+    Cmd_CommandAdd( pAbc, "Physical synthesis", "&phys_bind",    Abc_CommandPhysBind,    0 );
+    Cmd_CommandAdd( pAbc, "Physical synthesis", "&phys_place",   Abc_CommandPhysPlace,   0 );
+    Cmd_CommandAdd( pAbc, "Physical synthesis", "&phys_sta",     Abc_CommandPhysSta,     0 );
+    Cmd_CommandAdd( pAbc, "Physical synthesis", "&phys_dump",    Abc_CommandPhysDump,    0 );
+    Cmd_CommandAdd( pAbc, "Physical synthesis", "&phys_map",     Abc_CommandPhysMap,     0 );
 
     Cmd_CommandAdd( pAbc, "ABC9",         "&get",          Abc_CommandAbc9Get,          0 );
     Cmd_CommandAdd( pAbc, "ABC9",         "&put",          Abc_CommandAbc9Put,          0 );

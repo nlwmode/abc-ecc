@@ -393,6 +393,10 @@ struct Jf_Par_t_
     float          Epsilon;
     float *        pTimesArr;
     float *        pTimesReq;
+    float *        pPhysX;          // physical x coordinates per object (optional)
+    float *        pPhysY;          // physical y coordinates per object (optional)
+    float          PhysFlowW;       // area-flow cost of the cut bbox, gate areas per um
+    float          PhysDelayW;      // delay cost of the cut bbox, ps per um
     char *         ZFile;
 };
 

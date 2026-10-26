@@ -114,9 +114,15 @@ struct Abc_Frame_t_
     void *          pLibSuper;     // the current supergate library
     void *          pLibScl;       // the current Liberty library
     void *          pAbcCon;       // constraint manager
+    // physical synthesis
+    void *          pLef;          // Phys_LefTech_t (technology LEF + macros)
+    void *          pPhysLib;      // Phys_Lib_t (Liberty data)
+    void *          pPhysMan;      // Phys_Man_t (physical-synthesis session)
     // timing constraints
     char *          pDrivingCell;  // name of the driving cell
     float           MaxLoad;       // maximum output load
+    float           SignalRes;     // unit wire resistance of a signal net, ohm/um
+    float           SignalCap;     // unit wire capacitance of a signal net, pF/um
     // inductive don't-cares
     Vec_Int_t *     vIndFlops;
     int             nIndFrames;
