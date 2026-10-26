@@ -73,6 +73,13 @@ static char * Lef_StrWrap( const char * pPre, const char * pMid, const char * pP
     return pNew;
 }
 
+static char * Lef_StrNum( double Value )
+{
+    char Buffer[64];
+    snprintf( Buffer, sizeof(Buffer), "%.15g", Value );
+    return Lef_StrDup( Buffer );
+}
+
 static char * Lef_FirstWord( const char * pStr )
 {
     const char * pBeg, * pEnd;
@@ -120,27 +127,6 @@ static char * Lef_Unquote( const char * pQuoted )
     }
     pOut[k] = '\0';
     return pOut;
-}
-
-static int Lef_ParseFloats( const char * pStr, double * pValues, int nMax )
-{
-    const char * p = pStr;
-    char * pEnd;
-    int n = 0;
-    if ( pStr == NULL )
-        return 0;
-    while ( *p && n < nMax )
-    {
-        double Value = strtod( p, &pEnd );
-        if ( pEnd == p )
-        {
-            p++;
-            continue;
-        }
-        pValues[n++] = Value;
-        p = pEnd;
-    }
-    return n;
 }
 
 
@@ -520,200 +506,216 @@ static void Lef_ParsePopIgnore( Lef_Ctx_t * g )
     Lef_FrameFree( Lef_PopFrame(g) );
 }
 
-static void Lef_ParseRect( Phys_LefTech_t * pTech, const char * pVal, Vec_Int_t * vRects )
-{
-    double Val[4];
-    if ( Lef_ParseFloats( pVal, Val, 4 ) != 4 )
-        return;
-    Vec_IntPush( vRects, Lef_ToDbu(pTech, Val[0]) );
-    Vec_IntPush( vRects, Lef_ToDbu(pTech, Val[1]) );
-    Vec_IntPush( vRects, Lef_ToDbu(pTech, Val[2]) );
-    Vec_IntPush( vRects, Lef_ToDbu(pTech, Val[3]) );
-}
-
-static void Lef_ParseSimple( Lef_Ctx_t * g, const char * pKey, const char * pVal )
+static Vec_Int_t * Lef_RectTarget( Lef_Ctx_t * g )
 {
     Lef_Frame_t * f = Lef_FrameTop( g );
-    Phys_LefTech_t * pTech = g->pTech;
-    double v[8];
-    int n;
-    char * pWord;
-
     if ( f == NULL )
-    {
-        if ( !strcmp( pKey, "MANUFACTURINGGRID" ) )
-        {
-            n = Lef_ParseFloats( pVal, v, 1 );
-            if ( n > 0 )
-                pTech->ManufacturingGrid = (float)v[0];
-        }
-        return;
-    }
-
+        return NULL;
     switch ( f->Type )
     {
-    case LEF_FRM_MACRO:
+    case LEF_FRM_PIN:
+        return ((Phys_LefPin_t *)f->pObj)->vRects;
+    case LEF_FRM_PORT:
+        return f->pParent ? ((Phys_LefPin_t *)f->pParent)->vRects : NULL;
+    case LEF_FRM_OBS:
+        return f->pParent ? ((Phys_LefMacro_t *)f->pParent)->vObs : NULL;
+    default:
+        return NULL;
+    }
+}
+
+static void Lef_ParseRect( Lef_Ctx_t * g, double x1, double y1, double x2, double y2 )
+{
+    Vec_Int_t * vRects = Lef_RectTarget( g );
+    if ( vRects == NULL )
+        return;
+    Vec_IntPush( vRects, Lef_ToDbu( g->pTech, x1 ) );
+    Vec_IntPush( vRects, Lef_ToDbu( g->pTech, y1 ) );
+    Vec_IntPush( vRects, Lef_ToDbu( g->pTech, x2 ) );
+    Vec_IntPush( vRects, Lef_ToDbu( g->pTech, y2 ) );
+}
+
+static void Lef_ParseRectPoint( Lef_Ctx_t * g, double x, double y )
+{
+    Lef_ParseRect( g, x, y, x, y );
+}
+
+static void Lef_ParseClass( Lef_Ctx_t * g, const char * pClass )
+{
+    Lef_Frame_t * f = Lef_FrameTop( g );
+    char * pWord;
+    if ( f == NULL )
+        return;
+    pWord = Lef_FirstWord( pClass );
+    if ( f->Type == LEF_FRM_MACRO )
     {
         Phys_LefMacro_t * pMacro = (Phys_LefMacro_t *)f->pObj;
-        if ( !strcmp( pKey, "CLASS" ) )
-        {
-            ABC_FREE( pMacro->pClass );
-            pMacro->pClass = Lef_FirstWord( pVal );
-        }
-        else if ( !strcmp( pKey, "SITE" ) )
-        {
-            ABC_FREE( pMacro->pSite );
-            pMacro->pSite = Lef_FirstWord( pVal );
-        }
-        else if ( !strcmp( pKey, "ORIGIN" ) )
-        {
-            n = Lef_ParseFloats( pVal, v, 2 );
-            if ( n >= 2 )
-            {
-                pMacro->OriginX = Lef_ToDbu( pTech, v[0] );
-                pMacro->OriginY = Lef_ToDbu( pTech, v[1] );
-            }
-        }
-        else if ( !strcmp( pKey, "SIZE" ) )
-        {
-            n = Lef_ParseFloats( pVal, v, 2 );
-            if ( n >= 2 )
-            {
-                pMacro->Width  = Lef_ToDbu( pTech, v[0] );
-                pMacro->Height = Lef_ToDbu( pTech, v[1] );
-            }
-        }
-        break;
+        ABC_FREE( pMacro->pClass );
+        pMacro->pClass = pWord;
     }
-    case LEF_FRM_PIN:
-    {
-        Phys_LefPin_t * pPin = (Phys_LefPin_t *)f->pObj;
-        if ( !strcmp( pKey, "DIRECTION" ) )
-        {
-            pWord = Lef_FirstWord( pVal );
-            if ( !strcmp( pWord, "INPUT" ) || !strcmp( pWord, "FEEDTHRU" ) )
-                pPin->Dir = 0;
-            else if ( !strcmp( pWord, "OUTPUT" ) )
-                pPin->Dir = 1;
-            else
-                pPin->Dir = 2;
-            ABC_FREE( pWord );
-        }
-        else if ( !strcmp( pKey, "USE" ) )
-        {
-            pWord = Lef_FirstWord( pVal );
-            if ( !strcmp( pWord, "POWER" ) )
-                pPin->Dir = 3;
-            else if ( !strcmp( pWord, "GROUND" ) )
-                pPin->Dir = 4;
-            else if ( !strcmp( pWord, "CLOCK" ) )
-                pPin->Dir = 0;
-            /* USE SIGNAL does not override DIRECTION */
-            ABC_FREE( pWord );
-        }
-        else if ( !strcmp( pKey, "RECT" ) )
-            Lef_ParseRect( pTech, pVal, pPin->vRects );
-        break;
-    }
-    case LEF_FRM_PORT:
-    {
-        Phys_LefPin_t * pPin = (Phys_LefPin_t *)f->pParent;
-        if ( pPin != NULL && !strcmp( pKey, "RECT" ) )
-            Lef_ParseRect( pTech, pVal, pPin->vRects );
-        break;
-    }
-    case LEF_FRM_OBS:
-    {
-        Phys_LefMacro_t * pMacro = (Phys_LefMacro_t *)f->pParent;
-        if ( pMacro != NULL && !strcmp( pKey, "RECT" ) )
-            Lef_ParseRect( pTech, pVal, pMacro->vObs );
-        break;
-    }
-    case LEF_FRM_LAYER:
-    {
-        Phys_LefLayer_t * pLayer = (Phys_LefLayer_t *)f->pObj;
-        if ( !strcmp( pKey, "TYPE" ) )
-        {
-            ABC_FREE( pLayer->pType );
-            pLayer->pType = Lef_FirstWord( pVal );
-            pLayer->fRouting = !strcmp( pLayer->pType, "ROUTING" );
-        }
-        else if ( !strcmp( pKey, "DIRECTION" ) )
-        {
-            ABC_FREE( pLayer->pDir );
-            pLayer->pDir = Lef_FirstWord( pVal );
-        }
-        else if ( !strcmp( pKey, "WIDTH" ) )
-        {
-            n = Lef_ParseFloats( pVal, v, 1 );
-            if ( n > 0 )
-                pLayer->Width = Lef_ToDbu( pTech, v[0] );
-        }
-        else if ( !strcmp( pKey, "PITCH" ) )
-        {
-            n = Lef_ParseFloats( pVal, v, 2 );
-            if ( n > 0 )
-            {
-                pLayer->PitchX = Lef_ToDbu( pTech, v[0] );
-                pLayer->PitchY = n > 1 ? Lef_ToDbu( pTech, v[1] ) : pLayer->PitchX;
-            }
-        }
-        else if ( !strcmp( pKey, "RESISTANCE" ) )
-        {
-            n = Lef_ParseFloats( pVal, v, 1 );
-            if ( n > 0 )
-                pLayer->ResPerSq = (float)v[0];
-        }
-        else if ( !strcmp( pKey, "CAPACITANCE" ) )
-        {
-            n = Lef_ParseFloats( pVal, v, 1 );
-            if ( n > 0 )
-                pLayer->CapPerSq = (float)v[0];
-        }
-        else if ( !strcmp( pKey, "EDGECAPACITANCE" ) )
-        {
-            n = Lef_ParseFloats( pVal, v, 1 );
-            if ( n > 0 )
-                pLayer->EdgeCap = (float)v[0];
-        }
-        break;
-    }
-    case LEF_FRM_SITE:
+    else if ( f->Type == LEF_FRM_SITE )
     {
         Phys_LefSite_t * pSite = (Phys_LefSite_t *)f->pObj;
-        if ( !strcmp( pKey, "SIZE" ) )
-        {
-            n = Lef_ParseFloats( pVal, v, 2 );
-            if ( n >= 2 )
-            {
-                pSite->Width  = Lef_ToDbu( pTech, v[0] );
-                pSite->Height = Lef_ToDbu( pTech, v[1] );
-            }
-        }
-        else if ( !strcmp( pKey, "CLASS" ) )
-        {
-            ABC_FREE( pSite->pClass );
-            pSite->pClass = Lef_FirstWord( pVal );
-        }
-        break;
+        ABC_FREE( pSite->pClass );
+        pSite->pClass = pWord;
     }
-    case LEF_FRM_UNITS:
-        if ( !strcmp( pKey, "DATABASE" ) && g->fTech )
-        {
-            n = Lef_ParseFloats( pVal, v, 1 );
-            if ( n > 0 && v[0] > 0.0 )
-                pTech->Units.Dbu = (int)( v[0] + 0.5 );
-        }
-        else if ( !strcmp( pKey, "MANUFACTURINGGRID" ) )
-        {
-            n = Lef_ParseFloats( pVal, v, 1 );
-            if ( n > 0 )
-                pTech->ManufacturingGrid = (float)v[0];
-        }
-        break;
-    default:
-        break;
+    else
+        ABC_FREE( pWord );
+}
+
+static void Lef_ParseSiteRef( Lef_Ctx_t * g, const char * pSite )
+{
+    Lef_Frame_t * f = Lef_FrameTop( g );
+    Phys_LefMacro_t * pMacro;
+    if ( f == NULL || f->Type != LEF_FRM_MACRO )
+        return;
+    pMacro = (Phys_LefMacro_t *)f->pObj;
+    ABC_FREE( pMacro->pSite );
+    pMacro->pSite = Lef_StrDup( pSite );
+}
+
+static void Lef_ParseSize( Lef_Ctx_t * g, double Width, double Height )
+{
+    Lef_Frame_t * f = Lef_FrameTop( g );
+    if ( f == NULL )
+        return;
+    if ( f->Type == LEF_FRM_MACRO )
+    {
+        Phys_LefMacro_t * pMacro = (Phys_LefMacro_t *)f->pObj;
+        pMacro->Width  = Lef_ToDbu( g->pTech, Width );
+        pMacro->Height = Lef_ToDbu( g->pTech, Height );
     }
+    else if ( f->Type == LEF_FRM_SITE )
+    {
+        Phys_LefSite_t * pSite = (Phys_LefSite_t *)f->pObj;
+        pSite->Width  = Lef_ToDbu( g->pTech, Width );
+        pSite->Height = Lef_ToDbu( g->pTech, Height );
+    }
+}
+
+static void Lef_ParseOrigin( Lef_Ctx_t * g, double X, double Y )
+{
+    Lef_Frame_t * f = Lef_FrameTop( g );
+    Phys_LefMacro_t * pMacro;
+    if ( f == NULL || f->Type != LEF_FRM_MACRO )
+        return;
+    pMacro = (Phys_LefMacro_t *)f->pObj;
+    pMacro->OriginX = Lef_ToDbu( g->pTech, X );
+    pMacro->OriginY = Lef_ToDbu( g->pTech, Y );
+}
+
+static void Lef_ParseDirection( Lef_Ctx_t * g, const char * pDir )
+{
+    Lef_Frame_t * f = Lef_FrameTop( g );
+    if ( f == NULL )
+        return;
+    if ( f->Type == LEF_FRM_PIN )
+    {
+        Phys_LefPin_t * pPin = (Phys_LefPin_t *)f->pObj;
+        if ( !strcmp( pDir, "INPUT" ) || !strcmp( pDir, "FEEDTHRU" ) )
+            pPin->Dir = 0;
+        else if ( !strcmp( pDir, "OUTPUT" ) )
+            pPin->Dir = 1;
+        else
+            pPin->Dir = 2;
+    }
+    else if ( f->Type == LEF_FRM_LAYER )
+    {
+        Phys_LefLayer_t * pLayer = (Phys_LefLayer_t *)f->pObj;
+        ABC_FREE( pLayer->pDir );
+        pLayer->pDir = Lef_StrDup( pDir );
+    }
+}
+
+static void Lef_ParseUse( Lef_Ctx_t * g, const char * pUse )
+{
+    Lef_Frame_t * f = Lef_FrameTop( g );
+    Phys_LefPin_t * pPin;
+    if ( f == NULL || f->Type != LEF_FRM_PIN )
+        return;
+    pPin = (Phys_LefPin_t *)f->pObj;
+    if ( !strcmp( pUse, "POWER" ) )
+        pPin->Dir = 3;
+    else if ( !strcmp( pUse, "GROUND" ) )
+        pPin->Dir = 4;
+    else if ( !strcmp( pUse, "CLOCK" ) )
+        pPin->Dir = 0;
+    /* USE SIGNAL does not override DIRECTION */
+}
+
+static void Lef_ParseLayerType( Lef_Ctx_t * g, const char * pType )
+{
+    Lef_Frame_t * f = Lef_FrameTop( g );
+    Phys_LefLayer_t * pLayer;
+    if ( f == NULL || f->Type != LEF_FRM_LAYER )
+        return;
+    pLayer = (Phys_LefLayer_t *)f->pObj;
+    ABC_FREE( pLayer->pType );
+    pLayer->pType = Lef_StrDup( pType );
+    pLayer->fRouting = !strcmp( pType, "ROUTING" );
+}
+
+static void Lef_ParseWidth( Lef_Ctx_t * g, double Width )
+{
+    Lef_Frame_t * f = Lef_FrameTop( g );
+    if ( f == NULL || f->Type != LEF_FRM_LAYER )
+        return;
+    ((Phys_LefLayer_t *)f->pObj)->Width = Lef_ToDbu( g->pTech, Width );
+}
+
+static void Lef_ParsePitch( Lef_Ctx_t * g, double X, double Y, int fTwo )
+{
+    Lef_Frame_t * f = Lef_FrameTop( g );
+    Phys_LefLayer_t * pLayer;
+    if ( f == NULL || f->Type != LEF_FRM_LAYER )
+        return;
+    pLayer = (Phys_LefLayer_t *)f->pObj;
+    pLayer->PitchX = Lef_ToDbu( g->pTech, X );
+    pLayer->PitchY = fTwo ? Lef_ToDbu( g->pTech, Y ) : pLayer->PitchX;
+}
+
+static void Lef_ParseResistance( Lef_Ctx_t * g, const char * pQual, double Value )
+{
+    Lef_Frame_t * f = Lef_FrameTop( g );
+    if ( f == NULL || f->Type != LEF_FRM_LAYER )
+        return;
+    if ( pQual != NULL && strcmp( pQual, "RPERSQ" ) )
+        return;
+    ((Phys_LefLayer_t *)f->pObj)->ResPerSq = (float)Value;
+}
+
+static void Lef_ParseCapacitance( Lef_Ctx_t * g, const char * pQual, double Value )
+{
+    Lef_Frame_t * f = Lef_FrameTop( g );
+    if ( f == NULL || f->Type != LEF_FRM_LAYER )
+        return;
+    if ( pQual != NULL && strcmp( pQual, "CPERSQ" ) && strcmp( pQual, "CPERSQDIST" ) )
+        return;
+    ((Phys_LefLayer_t *)f->pObj)->CapPerSq = (float)Value;
+}
+
+static void Lef_ParseEdgeCapacitance( Lef_Ctx_t * g, double Value )
+{
+    Lef_Frame_t * f = Lef_FrameTop( g );
+    if ( f == NULL || f->Type != LEF_FRM_LAYER )
+        return;
+    ((Phys_LefLayer_t *)f->pObj)->EdgeCap = (float)Value;
+}
+
+static void Lef_ParseDatabase( Lef_Ctx_t * g, const char * pUnit, double Value )
+{
+    Lef_Frame_t * f = Lef_FrameTop( g );
+    if ( f == NULL || f->Type != LEF_FRM_UNITS || !g->fTech )
+        return;
+    if ( strcmp( pUnit, "MICRONS" ) || Value <= 0.0 )
+        return;
+    g->pTech->Units.Dbu = (int)( Value + 0.5 );
+}
+
+static void Lef_ParseGrid( Lef_Ctx_t * g, double Value )
+{
+    if ( Value > 0.0 )
+        g->pTech->ManufacturingGrid = (float)Value;
 }
 
 

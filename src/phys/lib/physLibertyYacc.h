@@ -64,7 +64,20 @@ extern int Lib_debug;
     LIB_UNDEF = 257,               /* "invalid token"  */
     LIB_TOK_NAME = 258,            /* LIB_TOK_NAME  */
     LIB_TOK_STRING = 259,          /* LIB_TOK_STRING  */
-    LIB_TOK_NUMBER = 260           /* LIB_TOK_NUMBER  */
+    LIB_TOK_NUMBER = 260,          /* LIB_TOK_NUMBER  */
+    LIB_TOK_LIBRARY = 261,         /* LIB_TOK_LIBRARY  */
+    LIB_TOK_CELL = 262,            /* LIB_TOK_CELL  */
+    LIB_TOK_PIN = 263,             /* LIB_TOK_PIN  */
+    LIB_TOK_TIMING = 264,          /* LIB_TOK_TIMING  */
+    LIB_TOK_LU_TABLE_TEMPLATE = 265, /* LIB_TOK_LU_TABLE_TEMPLATE  */
+    LIB_TOK_CELL_RISE = 266,       /* LIB_TOK_CELL_RISE  */
+    LIB_TOK_CELL_FALL = 267,       /* LIB_TOK_CELL_FALL  */
+    LIB_TOK_RISE_TRANSITION = 268, /* LIB_TOK_RISE_TRANSITION  */
+    LIB_TOK_FALL_TRANSITION = 269, /* LIB_TOK_FALL_TRANSITION  */
+    LIB_TOK_SEQUENTIAL = 270,      /* LIB_TOK_SEQUENTIAL  */
+    LIB_TOK_INDEX_1 = 271,         /* LIB_TOK_INDEX_1  */
+    LIB_TOK_INDEX_2 = 272,         /* LIB_TOK_INDEX_2  */
+    LIB_TOK_VALUES = 273           /* LIB_TOK_VALUES  */
   };
   typedef enum Lib_tokentype Lib_token_kind_t;
 #endif
@@ -76,8 +89,9 @@ union LIB_STYPE
 #line 5 "physLibertyYacc.y"
 
     char * s;
+    double d;
 
-#line 81 "physLibertyYacc.h"
+#line 95 "physLibertyYacc.h"
 
 };
 typedef union LIB_STYPE LIB_STYPE;

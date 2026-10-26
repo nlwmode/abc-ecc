@@ -77,7 +77,23 @@ extern int Lef_debug;
     LEF_TOK_VIARULE = 270,         /* LEF_TOK_VIARULE  */
     LEF_TOK_NONDEFAULTRULE = 271,  /* LEF_TOK_NONDEFAULTRULE  */
     LEF_TOK_ARRAY = 272,           /* LEF_TOK_ARRAY  */
-    LEF_TOK_END = 273              /* LEF_TOK_END  */
+    LEF_TOK_END = 273,             /* LEF_TOK_END  */
+    LEF_TOK_CLASS = 274,           /* LEF_TOK_CLASS  */
+    LEF_TOK_ORIGIN = 275,          /* LEF_TOK_ORIGIN  */
+    LEF_TOK_SIZE = 276,            /* LEF_TOK_SIZE  */
+    LEF_TOK_BY = 277,              /* LEF_TOK_BY  */
+    LEF_TOK_DIRECTION = 278,       /* LEF_TOK_DIRECTION  */
+    LEF_TOK_USE = 279,             /* LEF_TOK_USE  */
+    LEF_TOK_RECT = 280,            /* LEF_TOK_RECT  */
+    LEF_TOK_MASK = 281,            /* LEF_TOK_MASK  */
+    LEF_TOK_WIDTH = 282,           /* LEF_TOK_WIDTH  */
+    LEF_TOK_PITCH = 283,           /* LEF_TOK_PITCH  */
+    LEF_TOK_RESISTANCE = 284,      /* LEF_TOK_RESISTANCE  */
+    LEF_TOK_CAPACITANCE = 285,     /* LEF_TOK_CAPACITANCE  */
+    LEF_TOK_EDGECAPACITANCE = 286, /* LEF_TOK_EDGECAPACITANCE  */
+    LEF_TOK_TYPE = 287,            /* LEF_TOK_TYPE  */
+    LEF_TOK_DATABASE = 288,        /* LEF_TOK_DATABASE  */
+    LEF_TOK_MANUFACTURINGGRID = 289 /* LEF_TOK_MANUFACTURINGGRID  */
   };
   typedef enum Lef_tokentype Lef_token_kind_t;
 #endif
@@ -89,8 +105,9 @@ union LEF_STYPE
 #line 5 "physLefYacc.y"
 
     char * s;
+    double d;
 
-#line 94 "physLefYacc.h"
+#line 111 "physLefYacc.h"
 
 };
 typedef union LEF_STYPE LEF_STYPE;

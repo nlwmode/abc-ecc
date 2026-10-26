@@ -93,6 +93,13 @@ static char * Lib_StrWrap( const char * pPre, const char * pMid, const char * pP
     return pNew;
 }
 
+static char * Lib_StrNum( double Value )
+{
+    char Buffer[64];
+    snprintf( Buffer, sizeof(Buffer), "%.15g", Value );
+    return Lib_StrDup( Buffer );
+}
+
 static char * Lib_FirstWord( const char * pStr )
 {
     const char * pBeg, * pEnd;
@@ -465,22 +472,6 @@ static void Lib_FrameFree( Lib_Frame_t * f )
     ABC_FREE( f );
 }
 
-static int Lib_TableKind( const char * pKey )
-{
-    if ( !strcmp( pKey, "cell_rise" ) )       return 0;
-    if ( !strcmp( pKey, "cell_fall" ) )       return 1;
-    if ( !strcmp( pKey, "rise_transition" ) ) return 2;
-    if ( !strcmp( pKey, "fall_transition" ) ) return 3;
-    return -1;
-}
-
-static int Lib_IsSequentialGroup( const char * pKey )
-{
-    return !strcmp( pKey, "ff" ) || !strcmp( pKey, "ff_bank" ) ||
-           !strcmp( pKey, "latch" ) || !strcmp( pKey, "latch_bank" ) ||
-           !strcmp( pKey, "statetable" );
-}
-
 static Phys_LibCell_t * Lib_CurrentCell( Lib_Ctx_t * g )
 {
     int i;
@@ -493,78 +484,81 @@ static Phys_LibCell_t * Lib_CurrentCell( Lib_Ctx_t * g )
     return NULL;
 }
 
-static void Lib_ParsePush( Lib_Ctx_t * g, const char * pKey, const char * pArgs )
+static void Lib_PushLibrary( Lib_Ctx_t * g, const char * pArgs )
+{
+    char * pName = Lib_FirstWord( pArgs );
+    if ( g->pLib->pName == NULL && pName[0] )
+        g->pLib->pName = Lib_StrDup( pName );
+    g->fSeenLibrary = 1;
+    ABC_FREE( pName );
+    Lib_PushFrame( g, LIB_FRM_LIBRARY, NULL, NULL );
+}
+
+static void Lib_PushCell( Lib_Ctx_t * g, const char * pArgs )
+{
+    char * pName = Lib_FirstWord( pArgs );
+    Phys_LibCell_t * pCell = Phys_LibCellAlloc( pName );
+    ABC_FREE( pName );
+    Lib_PushFrame( g, LIB_FRM_CELL, pCell, NULL );
+}
+
+static void Lib_PushPin( Lib_Ctx_t * g, const char * pArgs )
 {
     Lib_Frame_t * pParent = Lib_FrameTop( g );
-    char * pName = Lib_FirstWord( pArgs );
-    int Kind;
-
-    if ( !strcmp( pKey, "library" ) )
+    if ( pParent != NULL && pParent->Type == LIB_FRM_CELL )
     {
-        if ( g->pLib->pName == NULL && pName[0] )
-            g->pLib->pName = Lib_StrDup( pName );
-        g->fSeenLibrary = 1;
-        Lib_PushFrame( g, LIB_FRM_LIBRARY, NULL, NULL );
-    }
-    else if ( !strcmp( pKey, "cell" ) )
-    {
-        Phys_LibCell_t * pCell = Phys_LibCellAlloc( pName );
-        Lib_PushFrame( g, LIB_FRM_CELL, pCell, NULL );
-    }
-    else if ( !strcmp( pKey, "pin" ) )
-    {
-        Phys_LibCell_t * pCell = (pParent && pParent->Type == LIB_FRM_CELL) ?
-            (Phys_LibCell_t *)pParent->pObj : NULL;
-        if ( pCell )
-        {
-            Phys_LibPin_t * pPin = Phys_LibPinAlloc( pName );
-            Lib_PushFrame( g, LIB_FRM_PIN, pPin, pCell );
-        }
-        else
-            Lib_PushFrame( g, LIB_FRM_OTHER, NULL, NULL );
-    }
-    else if ( !strcmp( pKey, "timing" ) )
-    {
-        Phys_LibPin_t * pPin = (pParent && pParent->Type == LIB_FRM_PIN) ?
-            (Phys_LibPin_t *)pParent->pObj : NULL;
-        if ( pPin )
-        {
-            Phys_TimingArc_t * pArc = Phys_ArcAlloc();
-            Lib_PushFrame( g, LIB_FRM_TIMING, pArc, pPin );
-        }
-        else
-            Lib_PushFrame( g, LIB_FRM_OTHER, NULL, NULL );
-    }
-    else if ( !strcmp( pKey, "lu_table_template" ) )
-    {
-        Phys_Template_t * pTemp = Phys_TemplateAlloc( pName );
-        Lib_PushFrame( g, LIB_FRM_TEMPLATE, pTemp, NULL );
-    }
-    else if ( (Kind = Lib_TableKind( pKey )) >= 0 )
-    {
-        if ( pParent && pParent->Type == LIB_FRM_TIMING )
-        {
-            Lib_Frame_t * f;
-            Phys_Surface_t * pSurf = Phys_SurfaceAlloc();
-            Lib_PushFrame( g, LIB_FRM_TABLE, pSurf, pParent->pObj );
-            f = Lib_FrameTop( g );
-            f->TableKind = Kind;
-            f->pTemplate = Lib_FirstWord( pArgs );
-        }
-        else
-            Lib_PushFrame( g, LIB_FRM_OTHER, NULL, NULL );
-    }
-    else if ( Lib_IsSequentialGroup( pKey ) )
-    {
-        Phys_LibCell_t * pCell = Lib_CurrentCell( g );
-        if ( pCell )
-            pCell->fSequential = 1;
-        Lib_PushFrame( g, LIB_FRM_SEQ, NULL, NULL );
+        char * pName = Lib_FirstWord( pArgs );
+        Phys_LibPin_t * pPin = Phys_LibPinAlloc( pName );
+        ABC_FREE( pName );
+        Lib_PushFrame( g, LIB_FRM_PIN, pPin, pParent->pObj );
     }
     else
         Lib_PushFrame( g, LIB_FRM_OTHER, NULL, NULL );
+}
 
+static void Lib_PushTiming( Lib_Ctx_t * g )
+{
+    Lib_Frame_t * pParent = Lib_FrameTop( g );
+    if ( pParent != NULL && pParent->Type == LIB_FRM_PIN )
+        Lib_PushFrame( g, LIB_FRM_TIMING, Phys_ArcAlloc(), pParent->pObj );
+    else
+        Lib_PushFrame( g, LIB_FRM_OTHER, NULL, NULL );
+}
+
+static void Lib_PushTemplate( Lib_Ctx_t * g, const char * pArgs )
+{
+    char * pName = Lib_FirstWord( pArgs );
+    Phys_Template_t * pTemp = Phys_TemplateAlloc( pName );
     ABC_FREE( pName );
+    Lib_PushFrame( g, LIB_FRM_TEMPLATE, pTemp, NULL );
+}
+
+static void Lib_PushTable( Lib_Ctx_t * g, int Kind, const char * pArgs )
+{
+    Lib_Frame_t * pParent = Lib_FrameTop( g );
+    if ( pParent != NULL && pParent->Type == LIB_FRM_TIMING )
+    {
+        Lib_Frame_t * f;
+        Lib_PushFrame( g, LIB_FRM_TABLE, Phys_SurfaceAlloc(), pParent->pObj );
+        f = Lib_FrameTop( g );
+        f->TableKind = Kind;
+        f->pTemplate = Lib_FirstWord( pArgs );
+    }
+    else
+        Lib_PushFrame( g, LIB_FRM_OTHER, NULL, NULL );
+}
+
+static void Lib_PushSequential( Lib_Ctx_t * g )
+{
+    Phys_LibCell_t * pCell = Lib_CurrentCell( g );
+    if ( pCell != NULL )
+        pCell->fSequential = 1;
+    Lib_PushFrame( g, LIB_FRM_SEQ, NULL, NULL );
+}
+
+static void Lib_PushIgnore( Lib_Ctx_t * g )
+{
+    Lib_PushFrame( g, LIB_FRM_OTHER, NULL, NULL );
 }
 
 static void Lib_FinalizeSurface( Lib_Ctx_t * g, Lib_Frame_t * f )
@@ -813,38 +807,40 @@ static void Lib_ParseAttr( Lib_Ctx_t * g, const char * pKey, const char * pVal )
 
 static void Lib_ParseCall( Lib_Ctx_t * g, const char * pKey, const char * pArgs )
 {
-    Lib_Frame_t * f = Lib_FrameTop( g );
-
     if ( !strcmp( pKey, "capacitive_load_unit" ) )
-    {
         g->pLib->Units.CapScale = Lib_ParseUnitScale( pArgs, "cap" );
-        return;
-    }
-    if ( !strcmp( pKey, "time_unit" ) )
-    {
+    else if ( !strcmp( pKey, "time_unit" ) )
         g->pLib->Units.TimeScale = Lib_ParseUnitScale( pArgs, "time" );
-        return;
-    }
+}
+
+static void Lib_ParseIndex( Lib_Ctx_t * g, int iIndex, const char * pArgs )
+{
+    Lib_Frame_t * f = Lib_FrameTop( g );
     if ( f == NULL )
         return;
     if ( f->Type == LIB_FRM_TEMPLATE )
     {
         Phys_Template_t * pTemp = (Phys_Template_t *)f->pObj;
-        if ( !strcmp( pKey, "index_1" ) )
-            Lib_ParseFloatList( pArgs, pTemp->vIndex1 );
-        else if ( !strcmp( pKey, "index_2" ) )
-            Lib_ParseFloatList( pArgs, pTemp->vIndex2 );
+        Lib_ParseFloatList( pArgs, iIndex == 0 ? pTemp->vIndex1 : pTemp->vIndex2 );
     }
     else if ( f->Type == LIB_FRM_TABLE )
     {
         Phys_Surface_t * pSurf = (Phys_Surface_t *)f->pObj;
-        if ( !strcmp( pKey, "index_1" ) )
-            Lib_ParseFloatList( pArgs, pSurf->vIndex0 );
-        else if ( !strcmp( pKey, "index_2" ) )
-            Lib_ParseFloatList( pArgs, pSurf->vIndex1 );
-        else if ( !strcmp( pKey, "values" ) )
-            Lib_ParseFloatList( pArgs, pSurf->vData );
+        Lib_ParseFloatList( pArgs, iIndex == 0 ? pSurf->vIndex0 : pSurf->vIndex1 );
     }
+}
+
+static void Lib_ParseValues( Lib_Ctx_t * g, const char * pArgs )
+{
+    Lib_Frame_t * f = Lib_FrameTop( g );
+    if ( f != NULL && f->Type == LIB_FRM_TABLE )
+        Lib_ParseFloatList( pArgs, ((Phys_Surface_t *)f->pObj)->vData );
+}
+
+static void Lib_ParseRecover( Lib_Ctx_t * g )
+{
+    /* the grammar discards one bad statement; keep going */
+    (void)g;
 }
 
 

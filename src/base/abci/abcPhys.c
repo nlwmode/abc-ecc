@@ -767,9 +767,10 @@ usage:
 ***********************************************************************/
 int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
-    Phys_PlacePars_t Pars;
+    Phys_PlacePars_t Pars, Def;
     int c, fVerbose = 0;
-    Phys_PlaceSetDefault( &Pars );
+    Phys_PlaceSetDefault( &Def );
+    Pars = Def;
     Extra_UtilGetoptReset();
     while ( (c = Extra_UtilGetopt( argc, argv, "u:a:i:s:vh" )) != EOF )
     {
@@ -820,10 +821,10 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
 usage:
     Abc_Print( -2, "usage: &phys_place [-u num] [-a num] [-i num] [-s num] [-vh]\n" );
     Abc_Print( -2, "\t          places the mapped and bound Gia netlist\n" );
-    Abc_Print( -2, "\t-u num  : target core utilization [default = %.2f]\n", 0.60 );
-    Abc_Print( -2, "\t-a num  : core height / width [default = %.2f]\n", 1.00 );
-    Abc_Print( -2, "\t-i num  : conjugate-gradient iterations [default = %d]\n", 300 );
-    Abc_Print( -2, "\t-s num  : wirelength-refinement rounds, 0 to skip [default = %d]\n", 20 );
+    Abc_Print( -2, "\t-u num  : target core utilization, 0 < num <= 1 [default = %.2f]\n", Def.Util );
+    Abc_Print( -2, "\t-a num  : core height / width [default = %.2f]\n", Def.Aspect );
+    Abc_Print( -2, "\t-i num  : conjugate-gradient iterations [default = %d]\n", Def.nIterCG );
+    Abc_Print( -2, "\t-s num  : wirelength-refinement rounds, 0 to skip [default = %d]\n", Def.nIterRefine );
     Abc_Print( -2, "\t-v      : print detailed information [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );
     return 1;
@@ -842,9 +843,10 @@ usage:
 ***********************************************************************/
 int Abc_CommandPhysSta( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
-    Phys_StaPars_t Pars;
+    Phys_StaPars_t Pars, Def;
     int c, fVerbose = 0;
-    Phys_StaSetDefault( &Pars );
+    Phys_StaSetDefault( &Def );
+    Pars = Def;
     /* the unit RC set by "set_signal_res"/"set_signal_cap" is the default;
        -r and -c override it for this run only */
     Pars.WireRes = Abc_FrameReadSignalRes();
@@ -904,7 +906,7 @@ usage:
     Abc_Print( -2, "usage: &phys_sta [-T num] [-s num] [-l layer] [-r num] [-c num] [-vh]\n" );
     Abc_Print( -2, "\t          reports timing with Elmore wire delays extracted from the placement\n" );
     Abc_Print( -2, "\t-T num  : clock period in ps [default = longest path]\n" );
-    Abc_Print( -2, "\t-s num  : input slew in ps [default = %.2f]\n", 10.0 );
+    Abc_Print( -2, "\t-s num  : input slew in ps [default = %.2f]\n", Def.InputSlew );
     Abc_Print( -2, "\t-l layer: routing layer for RC, or \"auto\" [default = auto]\n" );
     Abc_Print( -2, "\t-r num  : unit wire resistance in ohm/um [default = set_signal_res, else LEF]\n" );
     Abc_Print( -2, "\t-c num  : unit wire capacitance in pF/um [default = set_signal_cap, else LEF]\n" );
@@ -1097,22 +1099,47 @@ int Abc_CommandPhysMap( Abc_Frame_t * pAbc, int argc, char ** argv )
         case 'F':
             if ( globalUtilOptarg == NULL ) goto usage;
             pPars->nRounds = atoi( globalUtilOptarg );
+            if ( pPars->nRounds < 0 )
+            {
+                Abc_Print( -1, "The number of area-flow rounds should be non-negative.\n" );
+                goto usage;
+            }
             break;
         case 'E':
             if ( globalUtilOptarg == NULL ) goto usage;
             pPars->nAreaTuner = atoi( globalUtilOptarg );
+            if ( pPars->nAreaTuner < 0 || pPars->nAreaTuner > 100 )
+            {
+                Abc_Print( -1, "The area/edge tradeoff parameter %d is not in [0, 100].\n", pPars->nAreaTuner );
+                goto usage;
+            }
             break;
         case 'D':
             if ( globalUtilOptarg == NULL ) goto usage;
             pPars->DelayTarget = atoi( globalUtilOptarg );
+            if ( pPars->DelayTarget <= 0 )
+            {
+                Abc_Print( -1, "The delay target should be a positive integer.\n" );
+                goto usage;
+            }
             break;
         case 'x':
             if ( globalUtilOptarg == NULL ) goto usage;
             FlowW = (float)atof( globalUtilOptarg );
+            if ( FlowW < 0.0f )
+            {
+                Abc_Print( -1, "The area-flow weight should be non-negative.\n" );
+                goto usage;
+            }
             break;
         case 'y':
             if ( globalUtilOptarg == NULL ) goto usage;
             DelayW = (float)atof( globalUtilOptarg );
+            if ( DelayW < 0.0f )
+            {
+                Abc_Print( -1, "The delay weight should be non-negative.\n" );
+                goto usage;
+            }
             break;
         case 'v':
             fVerbose ^= 1;
@@ -1155,9 +1182,21 @@ int Abc_CommandPhysMap( Abc_Frame_t * pAbc, int argc, char ** argv )
         Abc_Print( -1, "The session data does not match the current Gia network. Run \"&phys_bind\" first.\n" );
         return 1;
     }
-    if ( pPars->nLutSize < 2 || pPars->nLutSize > pPars->nLutSizeMax ||
-         pPars->nCutNum < 1 || pPars->nCutNum > pPars->nCutNumMax )
+    if ( pPars->nLutSize < 2 || pPars->nLutSize > pPars->nLutSizeMax )
+    {
+        Abc_Print( -1, "LUT size %d is not supported.\n", pPars->nLutSize );
         goto usage;
+    }
+    if ( pPars->nCutNum < 1 || pPars->nCutNum > pPars->nCutNumMax )
+    {
+        Abc_Print( -1, "The number of cuts %d is not supported.\n", pPars->nCutNum );
+        goto usage;
+    }
+    if ( nObjs < 2 )
+    {
+        Abc_Print( -1, "The Gia network has no objects to map.\n" );
+        return 1;
+    }
     pX = ABC_ALLOC( float, nObjs );
     pY = ABC_ALLOC( float, nObjs );
     Abc_PhysMapCoords( pMan, pAbc->pGia, pX, pY );

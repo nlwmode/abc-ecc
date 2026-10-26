@@ -107,34 +107,63 @@ enum yysymbol_kind_t
   YYSYMBOL_LIB_TOK_NAME = 3,               /* LIB_TOK_NAME  */
   YYSYMBOL_LIB_TOK_STRING = 4,             /* LIB_TOK_STRING  */
   YYSYMBOL_LIB_TOK_NUMBER = 5,             /* LIB_TOK_NUMBER  */
-  YYSYMBOL_6_ = 6,                         /* ':'  */
-  YYSYMBOL_7_ = 7,                         /* ';'  */
-  YYSYMBOL_8_ = 8,                         /* '('  */
-  YYSYMBOL_9_ = 9,                         /* ')'  */
-  YYSYMBOL_10_ = 10,                       /* '{'  */
-  YYSYMBOL_11_ = 11,                       /* '}'  */
-  YYSYMBOL_12_ = 12,                       /* ','  */
-  YYSYMBOL_YYACCEPT = 13,                  /* $accept  */
-  YYSYMBOL_stmts = 14,                     /* stmts  */
-  YYSYMBOL_stmt = 15,                      /* stmt  */
-  YYSYMBOL_16_1 = 16,                      /* $@1  */
-  YYSYMBOL_17_2 = 17,                      /* $@2  */
-  YYSYMBOL_values = 18,                    /* values  */
-  YYSYMBOL_value = 19,                     /* value  */
-  YYSYMBOL_arglist = 20,                   /* arglist  */
-  YYSYMBOL_argitems = 21,                  /* argitems  */
-  YYSYMBOL_argitem = 22                    /* argitem  */
+  YYSYMBOL_LIB_TOK_LIBRARY = 6,            /* LIB_TOK_LIBRARY  */
+  YYSYMBOL_LIB_TOK_CELL = 7,               /* LIB_TOK_CELL  */
+  YYSYMBOL_LIB_TOK_PIN = 8,                /* LIB_TOK_PIN  */
+  YYSYMBOL_LIB_TOK_TIMING = 9,             /* LIB_TOK_TIMING  */
+  YYSYMBOL_LIB_TOK_LU_TABLE_TEMPLATE = 10, /* LIB_TOK_LU_TABLE_TEMPLATE  */
+  YYSYMBOL_LIB_TOK_CELL_RISE = 11,         /* LIB_TOK_CELL_RISE  */
+  YYSYMBOL_LIB_TOK_CELL_FALL = 12,         /* LIB_TOK_CELL_FALL  */
+  YYSYMBOL_LIB_TOK_RISE_TRANSITION = 13,   /* LIB_TOK_RISE_TRANSITION  */
+  YYSYMBOL_LIB_TOK_FALL_TRANSITION = 14,   /* LIB_TOK_FALL_TRANSITION  */
+  YYSYMBOL_LIB_TOK_SEQUENTIAL = 15,        /* LIB_TOK_SEQUENTIAL  */
+  YYSYMBOL_LIB_TOK_INDEX_1 = 16,           /* LIB_TOK_INDEX_1  */
+  YYSYMBOL_LIB_TOK_INDEX_2 = 17,           /* LIB_TOK_INDEX_2  */
+  YYSYMBOL_LIB_TOK_VALUES = 18,            /* LIB_TOK_VALUES  */
+  YYSYMBOL_19_ = 19,                       /* '('  */
+  YYSYMBOL_20_ = 20,                       /* ')'  */
+  YYSYMBOL_21_ = 21,                       /* '{'  */
+  YYSYMBOL_22_ = 22,                       /* '}'  */
+  YYSYMBOL_23_ = 23,                       /* ';'  */
+  YYSYMBOL_24_ = 24,                       /* ':'  */
+  YYSYMBOL_25_ = 25,                       /* ','  */
+  YYSYMBOL_YYACCEPT = 26,                  /* $accept  */
+  YYSYMBOL_stmts = 27,                     /* stmts  */
+  YYSYMBOL_stmt = 28,                      /* stmt  */
+  YYSYMBOL_29_1 = 29,                      /* $@1  */
+  YYSYMBOL_30_2 = 30,                      /* $@2  */
+  YYSYMBOL_31_3 = 31,                      /* $@3  */
+  YYSYMBOL_32_4 = 32,                      /* $@4  */
+  YYSYMBOL_33_5 = 33,                      /* $@5  */
+  YYSYMBOL_34_6 = 34,                      /* $@6  */
+  YYSYMBOL_35_7 = 35,                      /* $@7  */
+  YYSYMBOL_36_8 = 36,                      /* $@8  */
+  YYSYMBOL_37_9 = 37,                      /* $@9  */
+  YYSYMBOL_38_10 = 38,                     /* $@10  */
+  YYSYMBOL_39_11 = 39,                     /* $@11  */
+  YYSYMBOL_40_12 = 40,                     /* $@12  */
+  YYSYMBOL_attr_values = 41,               /* attr_values  */
+  YYSYMBOL_attr_atom = 42,                 /* attr_atom  */
+  YYSYMBOL_arglist = 43,                   /* arglist  */
+  YYSYMBOL_argitems = 44,                  /* argitems  */
+  YYSYMBOL_argitem = 45                    /* argitem  */
 };
 typedef enum yysymbol_kind_t yysymbol_kind_t;
 
 
 /* Second part of user prologue.  */
-#line 17 "physLibertyYacc.y"
+#line 35 "physLibertyYacc.y"
 
 /* The semantic actions below call the static helpers defined in
-   physLiberty.c, which includes this generated file at its end. */
+   physLiberty.c, which includes this generated file at its end.  The
+   lexer classifies the statement keys of the supported subset (groups
+   and numeric table statements) and returns a distinct token for each,
+   so the group structure is resolved here rather than by string
+   comparison in the actions.  Attributes keep their open-ended
+   `name : value ;' shape; unknown groups fall back to the generic
+   group productions and are skipped. */
 
-#line 138 "physLibertyYacc.c"
+#line 167 "physLibertyYacc.c"
 
 
 #ifdef short
@@ -247,7 +276,7 @@ typedef int yytype_uint16;
 
 
 /* Stored state numbers (used for stacks). */
-typedef yytype_int8 yy_state_t;
+typedef yytype_uint8 yy_state_t;
 
 /* State numbers in computations.  */
 typedef int yy_state_fast_t;
@@ -458,19 +487,19 @@ union yyalloc
 /* YYFINAL -- State number of the termination state.  */
 #define YYFINAL  2
 /* YYLAST -- Last index in YYTABLE.  */
-#define YYLAST   36
+#define YYLAST   311
 
 /* YYNTOKENS -- Number of terminals.  */
-#define YYNTOKENS  13
+#define YYNTOKENS  26
 /* YYNNTS -- Number of nonterminals.  */
-#define YYNNTS  10
+#define YYNNTS  20
 /* YYNRULES -- Number of rules.  */
-#define YYNRULES  25
+#define YYNRULES  49
 /* YYNSTATES -- Number of states.  */
-#define YYNSTATES  37
+#define YYNSTATES  134
 
 /* YYMAXUTOK -- Last valid token kind.  */
-#define YYMAXUTOK   260
+#define YYMAXUTOK   273
 
 
 /* YYTRANSLATE(TOKEN-NUM) -- Symbol number corresponding to TOKEN-NUM
@@ -488,15 +517,15 @@ static const yytype_int8 yytranslate[] =
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
-       8,     9,     2,     2,    12,     2,     2,     2,     2,     2,
-       2,     2,     2,     2,     2,     2,     2,     2,     6,     7,
+      19,    20,     2,     2,    25,     2,     2,     2,     2,     2,
+       2,     2,     2,     2,     2,     2,     2,     2,    24,    23,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
-       2,     2,     2,    10,     2,    11,     2,     2,     2,     2,
+       2,     2,     2,    21,     2,    22,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
@@ -510,16 +539,19 @@ static const yytype_int8 yytranslate[] =
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     1,     2,     3,     4,
-       5
+       5,     6,     7,     8,     9,    10,    11,    12,    13,    14,
+      15,    16,    17,    18
 };
 
 #if LIB_DEBUG
 /* YYRLINE[YYN] -- Source line where rule number YYN was defined.  */
-static const yytype_int8 yyrline[] =
+static const yytype_uint8 yyrline[] =
 {
-       0,    28,    28,    30,    34,    40,    47,    46,    57,    56,
-      65,    69,    77,    78,    82,    83,    84,    85,    86,    90,
-      91,    95,    96,   100,   101,   102
+       0,    52,    52,    54,    59,    58,    68,    67,    77,    76,
+      86,    85,    95,    94,   104,   103,   113,   112,   122,   121,
+     131,   130,   140,   139,   148,   153,   158,   163,   169,   176,
+     175,   186,   185,   194,   198,   199,   210,   211,   215,   216,
+     217,   218,   219,   223,   224,   228,   229,   233,   234,   235
 };
 #endif
 
@@ -536,9 +568,14 @@ static const char *yysymbol_name (yysymbol_kind_t yysymbol) YY_ATTRIBUTE_UNUSED;
 static const char *const yytname[] =
 {
   "\"end of file\"", "error", "\"invalid token\"", "LIB_TOK_NAME",
-  "LIB_TOK_STRING", "LIB_TOK_NUMBER", "':'", "';'", "'('", "')'", "'{'",
-  "'}'", "','", "$accept", "stmts", "stmt", "$@1", "$@2", "values",
-  "value", "arglist", "argitems", "argitem", YY_NULLPTR
+  "LIB_TOK_STRING", "LIB_TOK_NUMBER", "LIB_TOK_LIBRARY", "LIB_TOK_CELL",
+  "LIB_TOK_PIN", "LIB_TOK_TIMING", "LIB_TOK_LU_TABLE_TEMPLATE",
+  "LIB_TOK_CELL_RISE", "LIB_TOK_CELL_FALL", "LIB_TOK_RISE_TRANSITION",
+  "LIB_TOK_FALL_TRANSITION", "LIB_TOK_SEQUENTIAL", "LIB_TOK_INDEX_1",
+  "LIB_TOK_INDEX_2", "LIB_TOK_VALUES", "'('", "')'", "'{'", "'}'", "';'",
+  "':'", "','", "$accept", "stmts", "stmt", "$@1", "$@2", "$@3", "$@4",
+  "$@5", "$@6", "$@7", "$@8", "$@9", "$@10", "$@11", "$@12", "attr_values",
+  "attr_atom", "arglist", "argitems", "argitem", YY_NULLPTR
 };
 
 static const char *
@@ -548,7 +585,7 @@ yysymbol_name (yysymbol_kind_t yysymbol)
 }
 #endif
 
-#define YYPACT_NINF (-18)
+#define YYPACT_NINF (-45)
 
 #define yypact_value_is_default(Yyn) \
   ((Yyn) == YYPACT_NINF)
@@ -560,12 +597,22 @@ yysymbol_name (yysymbol_kind_t yysymbol)
 
 /* YYPACT[STATE-NUM] -- Index in YYTABLE of the portion describing
    STATE-NUM.  */
-static const yytype_int8 yypact[] =
+static const yytype_int16 yypact[] =
 {
-     -18,    20,   -18,    18,   -18,   -18,   -18,   -18,    30,   -18,
-      -2,   -18,   -18,   -18,    -5,     9,   -18,   -18,   -18,   -18,
-     -18,   -18,   -18,   -18,   -18,    22,    30,     8,     4,   -18,
-     -18,   -18,   -18,   -18,   -18,    11,   -18
+     -45,     1,   -45,   -17,   257,     2,     4,    38,    50,    52,
+      53,    68,    86,   104,   122,   140,   158,   176,   -45,   -45,
+     -45,    35,   -45,   -45,   -45,    35,    35,    35,    35,    35,
+      35,    35,    35,    35,    35,    35,    35,    35,   -45,   -45,
+     -45,   251,   188,   -45,   -45,   263,   252,   259,   264,   265,
+     267,   271,   272,   273,   274,   276,   277,   278,   279,   -18,
+      35,    19,   -45,   -45,   -45,   -45,   -45,   -45,   -45,   210,
+     228,   256,   262,   280,   281,   282,   283,   284,   285,   286,
+     287,   288,   -45,   -45,   -45,   -45,   270,   -45,   -45,   -45,
+     -45,   -45,   -45,   -45,   -45,   -45,   -45,   -45,   -45,   -45,
+     -45,   -45,   -45,   -45,   -45,   -45,   -45,   -45,   -45,   -45,
+     -45,   -45,    67,    85,   103,   121,   139,   157,   175,   193,
+     211,   229,   247,   -45,   -45,   -45,   -45,   -45,   -45,   -45,
+     -45,   -45,   -45,   -45
 };
 
 /* YYDEFACT[STATE-NUM] -- Default reduction number in state STATE-NUM.
@@ -573,67 +620,149 @@ static const yytype_int8 yypact[] =
    means the default is an error.  */
 static const yytype_int8 yydefact[] =
 {
-       2,     0,     1,     0,    11,     3,    12,    10,    19,     8,
-       0,    23,    25,    24,     0,    20,    21,     2,    14,    16,
-      15,     4,    12,    18,    13,     0,     0,     0,     0,     5,
-       6,    22,     9,    17,     2,     0,     7
+       2,     0,     1,     0,     0,     0,     0,     0,     0,     0,
+       0,     0,     0,     0,     0,     0,     0,     0,    34,     3,
+      35,    43,    31,    33,    36,    43,    43,    43,    43,    43,
+      43,    43,    43,    43,    43,    43,    43,    43,    47,    49,
+      48,     0,    44,    45,     2,     0,     0,     0,     0,     0,
+       0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+       0,     0,    38,    40,    39,    36,    27,    42,    37,     0,
+       0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+       0,     0,    29,    28,    46,    32,     0,     4,     6,     8,
+      10,    12,    14,    16,    18,    20,    22,    24,    25,    26,
+       2,    41,     2,     2,     2,     2,     2,     2,     2,     2,
+       2,     2,     0,     0,     0,     0,     0,     0,     0,     0,
+       0,     0,     0,    30,     5,     7,     9,    11,    13,    15,
+      17,    19,    21,    23
 };
 
 /* YYPGOTO[NTERM-NUM].  */
-static const yytype_int8 yypgoto[] =
+static const yytype_int16 yypgoto[] =
 {
-     -18,   -17,   -18,   -18,   -18,    14,   -18,   -18,   -18,     5
+     -45,   -44,   -45,   -45,   -45,   -45,   -45,   -45,   -45,   -45,
+     -45,   -45,   -45,   -45,   -45,   235,   -45,    18,   -45,   248
 };
 
 /* YYDEFGOTO[NTERM-NUM].  */
 static const yytype_int8 yydefgoto[] =
 {
-       0,     1,     5,    34,    17,    10,    24,    14,    15,    16
+       0,     1,    19,   102,   103,   104,   105,   106,   107,   108,
+     109,   110,   111,   100,    44,    45,    68,    41,    42,    43
 };
 
 /* YYTABLE[YYPACT[STATE-NUM]] -- What to do in state STATE-NUM.  If
    positive, shift that token.  If negative, reduce the rule whose
    number is the opposite.  If YYTABLE_NINF, syntax error.  */
-static const yytype_int8 yytable[] =
+static const yytype_uint8 yytable[] =
 {
-      27,    18,    19,    20,    25,    21,    22,    18,    19,    20,
-      23,     3,    22,    33,     3,     4,    23,    35,     4,    32,
-       2,    26,    36,     3,     6,     7,     8,     4,     9,    29,
-       0,    31,    30,    11,    12,    13,    28
+      61,     2,     3,    82,     4,    83,    20,     5,     6,     7,
+       8,     9,    10,    11,    12,    13,    14,    15,    16,    17,
+       3,    25,     4,    26,    18,     5,     6,     7,     8,     9,
+      10,    11,    12,    13,    14,    15,    16,    17,    38,    39,
+      40,    85,    18,    46,    47,    48,    49,    50,    51,    52,
+      53,    54,    55,    56,    57,    58,   112,    27,   113,   114,
+     115,   116,   117,   118,   119,   120,   121,   122,     3,    28,
+       4,    29,    30,     5,     6,     7,     8,     9,    10,    11,
+      12,    13,    14,    15,    16,    17,     3,    31,     4,   123,
+      18,     5,     6,     7,     8,     9,    10,    11,    12,    13,
+      14,    15,    16,    17,     3,    32,     4,   124,    18,     5,
+       6,     7,     8,     9,    10,    11,    12,    13,    14,    15,
+      16,    17,     3,    33,     4,   125,    18,     5,     6,     7,
+       8,     9,    10,    11,    12,    13,    14,    15,    16,    17,
+       3,    34,     4,   126,    18,     5,     6,     7,     8,     9,
+      10,    11,    12,    13,    14,    15,    16,    17,     3,    35,
+       4,   127,    18,     5,     6,     7,     8,     9,    10,    11,
+      12,    13,    14,    15,    16,    17,     3,    36,     4,   128,
+      18,     5,     6,     7,     8,     9,    10,    11,    12,    13,
+      14,    15,    16,    17,     3,    37,     4,   129,    18,     5,
+       6,     7,     8,     9,    10,    11,    12,    13,    14,    15,
+      16,    17,     3,    60,     4,   130,    18,     5,     6,     7,
+       8,     9,    10,    11,    12,    13,    14,    15,    16,    17,
+       3,    87,     4,   131,    18,     5,     6,     7,     8,     9,
+      10,    11,    12,    13,    14,    15,    16,    17,     3,    88,
+       4,   132,    18,     5,     6,     7,     8,     9,    10,    11,
+      12,    13,    14,    15,    16,    17,    62,    63,    64,   133,
+      18,    59,    69,    62,    63,    64,    21,    89,    22,    70,
+      23,    24,    65,    90,    71,    72,    66,    73,    67,    65,
+     101,    74,    75,    76,    77,    67,    78,    79,    80,    81,
+      86,    91,    92,    93,    94,    95,    96,     0,    84,    97,
+      98,    99
 };
 
 static const yytype_int8 yycheck[] =
 {
-      17,     3,     4,     5,     9,     7,     8,     3,     4,     5,
-      12,     3,     8,     9,     3,     7,    12,    34,     7,    11,
-       0,    12,    11,     3,     6,     7,     8,     7,    10,     7,
-      -1,    26,    10,     3,     4,     5,    22
+      44,     0,     1,    21,     3,    23,    23,     6,     7,     8,
+       9,    10,    11,    12,    13,    14,    15,    16,    17,    18,
+       1,    19,     3,    19,    23,     6,     7,     8,     9,    10,
+      11,    12,    13,    14,    15,    16,    17,    18,     3,     4,
+       5,    22,    23,    25,    26,    27,    28,    29,    30,    31,
+      32,    33,    34,    35,    36,    37,   100,    19,   102,   103,
+     104,   105,   106,   107,   108,   109,   110,   111,     1,    19,
+       3,    19,    19,     6,     7,     8,     9,    10,    11,    12,
+      13,    14,    15,    16,    17,    18,     1,    19,     3,    22,
+      23,     6,     7,     8,     9,    10,    11,    12,    13,    14,
+      15,    16,    17,    18,     1,    19,     3,    22,    23,     6,
+       7,     8,     9,    10,    11,    12,    13,    14,    15,    16,
+      17,    18,     1,    19,     3,    22,    23,     6,     7,     8,
+       9,    10,    11,    12,    13,    14,    15,    16,    17,    18,
+       1,    19,     3,    22,    23,     6,     7,     8,     9,    10,
+      11,    12,    13,    14,    15,    16,    17,    18,     1,    19,
+       3,    22,    23,     6,     7,     8,     9,    10,    11,    12,
+      13,    14,    15,    16,    17,    18,     1,    19,     3,    22,
+      23,     6,     7,     8,     9,    10,    11,    12,    13,    14,
+      15,    16,    17,    18,     1,    19,     3,    22,    23,     6,
+       7,     8,     9,    10,    11,    12,    13,    14,    15,    16,
+      17,    18,     1,    25,     3,    22,    23,     6,     7,     8,
+       9,    10,    11,    12,    13,    14,    15,    16,    17,    18,
+       1,    21,     3,    22,    23,     6,     7,     8,     9,    10,
+      11,    12,    13,    14,    15,    16,    17,    18,     1,    21,
+       3,    22,    23,     6,     7,     8,     9,    10,    11,    12,
+      13,    14,    15,    16,    17,    18,     3,     4,     5,    22,
+      23,    20,    20,     3,     4,     5,    19,    21,    21,    20,
+      23,    24,    19,    21,    20,    20,    23,    20,    25,    19,
+      20,    20,    20,    20,    20,    25,    20,    20,    20,    20,
+      65,    21,    21,    21,    21,    21,    21,    -1,    60,    23,
+      23,    23
 };
 
 /* YYSTOS[STATE-NUM] -- The symbol kind of the accessing symbol of
    state STATE-NUM.  */
 static const yytype_int8 yystos[] =
 {
-       0,    14,     0,     3,     7,    15,     6,     7,     8,    10,
-      18,     3,     4,     5,    20,    21,    22,    17,     3,     4,
-       5,     7,     8,    12,    19,     9,    12,    14,    18,     7,
-      10,    22,    11,     9,    16,    14,    11
+       0,    27,     0,     1,     3,     6,     7,     8,     9,    10,
+      11,    12,    13,    14,    15,    16,    17,    18,    23,    28,
+      23,    19,    21,    23,    24,    19,    19,    19,    19,    19,
+      19,    19,    19,    19,    19,    19,    19,    19,     3,     4,
+       5,    43,    44,    45,    40,    41,    43,    43,    43,    43,
+      43,    43,    43,    43,    43,    43,    43,    43,    43,    20,
+      25,    27,     3,     4,     5,    19,    23,    25,    42,    20,
+      20,    20,    20,    20,    20,    20,    20,    20,    20,    20,
+      20,    20,    21,    23,    45,    22,    41,    21,    21,    21,
+      21,    21,    21,    21,    21,    21,    21,    23,    23,    23,
+      39,    20,    29,    30,    31,    32,    33,    34,    35,    36,
+      37,    38,    27,    27,    27,    27,    27,    27,    27,    27,
+      27,    27,    27,    22,    22,    22,    22,    22,    22,    22,
+      22,    22,    22,    22
 };
 
 /* YYR1[RULE-NUM] -- Symbol kind of the left-hand side of rule RULE-NUM.  */
 static const yytype_int8 yyr1[] =
 {
-       0,    13,    14,    14,    15,    15,    16,    15,    17,    15,
-      15,    15,    18,    18,    19,    19,    19,    19,    19,    20,
-      20,    21,    21,    22,    22,    22
+       0,    26,    27,    27,    29,    28,    30,    28,    31,    28,
+      32,    28,    33,    28,    34,    28,    35,    28,    36,    28,
+      37,    28,    38,    28,    28,    28,    28,    28,    28,    39,
+      28,    40,    28,    28,    28,    28,    41,    41,    42,    42,
+      42,    42,    42,    43,    43,    44,    44,    45,    45,    45
 };
 
 /* YYR2[RULE-NUM] -- Number of symbols on the right-hand side of rule RULE-NUM.  */
 static const yytype_int8 yyr2[] =
 {
-       0,     2,     0,     2,     4,     5,     0,     8,     0,     5,
-       2,     1,     0,     2,     1,     1,     1,     3,     1,     0,
-       1,     1,     3,     1,     1,     1
+       0,     2,     0,     2,     0,     8,     0,     8,     0,     8,
+       0,     8,     0,     8,     0,     8,     0,     8,     0,     8,
+       0,     8,     0,     8,     5,     5,     5,     4,     5,     0,
+       8,     0,     5,     2,     1,     2,     0,     2,     1,     1,
+       1,     3,     1,     0,     1,     1,     3,     1,     1,     1
 };
 
 
@@ -1104,51 +1233,45 @@ yydestruct (const char *yymsg,
   switch (yykind)
     {
     case YYSYMBOL_LIB_TOK_NAME: /* LIB_TOK_NAME  */
-#line 15 "physLibertyYacc.y"
+#line 33 "physLibertyYacc.y"
             { free(((*yyvaluep).s)); }
-#line 1110 "physLibertyYacc.c"
+#line 1239 "physLibertyYacc.c"
         break;
 
     case YYSYMBOL_LIB_TOK_STRING: /* LIB_TOK_STRING  */
-#line 15 "physLibertyYacc.y"
+#line 33 "physLibertyYacc.y"
             { free(((*yyvaluep).s)); }
-#line 1116 "physLibertyYacc.c"
+#line 1245 "physLibertyYacc.c"
         break;
 
-    case YYSYMBOL_LIB_TOK_NUMBER: /* LIB_TOK_NUMBER  */
-#line 15 "physLibertyYacc.y"
+    case YYSYMBOL_attr_values: /* attr_values  */
+#line 33 "physLibertyYacc.y"
             { free(((*yyvaluep).s)); }
-#line 1122 "physLibertyYacc.c"
+#line 1251 "physLibertyYacc.c"
         break;
 
-    case YYSYMBOL_values: /* values  */
-#line 15 "physLibertyYacc.y"
+    case YYSYMBOL_attr_atom: /* attr_atom  */
+#line 33 "physLibertyYacc.y"
             { free(((*yyvaluep).s)); }
-#line 1128 "physLibertyYacc.c"
-        break;
-
-    case YYSYMBOL_value: /* value  */
-#line 15 "physLibertyYacc.y"
-            { free(((*yyvaluep).s)); }
-#line 1134 "physLibertyYacc.c"
+#line 1257 "physLibertyYacc.c"
         break;
 
     case YYSYMBOL_arglist: /* arglist  */
-#line 15 "physLibertyYacc.y"
+#line 33 "physLibertyYacc.y"
             { free(((*yyvaluep).s)); }
-#line 1140 "physLibertyYacc.c"
+#line 1263 "physLibertyYacc.c"
         break;
 
     case YYSYMBOL_argitems: /* argitems  */
-#line 15 "physLibertyYacc.y"
+#line 33 "physLibertyYacc.y"
             { free(((*yyvaluep).s)); }
-#line 1146 "physLibertyYacc.c"
+#line 1269 "physLibertyYacc.c"
         break;
 
     case YYSYMBOL_argitem: /* argitem  */
-#line 15 "physLibertyYacc.y"
+#line 33 "physLibertyYacc.y"
             { free(((*yyvaluep).s)); }
-#line 1152 "physLibertyYacc.c"
+#line 1275 "physLibertyYacc.c"
         break;
 
       default:
@@ -1418,155 +1541,360 @@ yyreduce:
   YY_REDUCE_PRINT (yyn);
   switch (yyn)
     {
-  case 4: /* stmt: LIB_TOK_NAME ':' values ';'  */
-#line 35 "physLibertyYacc.y"
+  case 4: /* $@1: %empty  */
+#line 59 "physLibertyYacc.y"
+        {
+            Lib_PushLibrary( Lib_ParseCtx(), (yyvsp[-2].s) );
+            free( (yyvsp[-2].s) );
+        }
+#line 1551 "physLibertyYacc.c"
+    break;
+
+  case 5: /* stmt: LIB_TOK_LIBRARY '(' arglist ')' '{' $@1 stmts '}'  */
+#line 64 "physLibertyYacc.y"
+        {
+            Lib_ParsePop( Lib_ParseCtx() );
+        }
+#line 1559 "physLibertyYacc.c"
+    break;
+
+  case 6: /* $@2: %empty  */
+#line 68 "physLibertyYacc.y"
+        {
+            Lib_PushCell( Lib_ParseCtx(), (yyvsp[-2].s) );
+            free( (yyvsp[-2].s) );
+        }
+#line 1568 "physLibertyYacc.c"
+    break;
+
+  case 7: /* stmt: LIB_TOK_CELL '(' arglist ')' '{' $@2 stmts '}'  */
+#line 73 "physLibertyYacc.y"
+        {
+            Lib_ParsePop( Lib_ParseCtx() );
+        }
+#line 1576 "physLibertyYacc.c"
+    break;
+
+  case 8: /* $@3: %empty  */
+#line 77 "physLibertyYacc.y"
+        {
+            Lib_PushPin( Lib_ParseCtx(), (yyvsp[-2].s) );
+            free( (yyvsp[-2].s) );
+        }
+#line 1585 "physLibertyYacc.c"
+    break;
+
+  case 9: /* stmt: LIB_TOK_PIN '(' arglist ')' '{' $@3 stmts '}'  */
+#line 82 "physLibertyYacc.y"
+        {
+            Lib_ParsePop( Lib_ParseCtx() );
+        }
+#line 1593 "physLibertyYacc.c"
+    break;
+
+  case 10: /* $@4: %empty  */
+#line 86 "physLibertyYacc.y"
+        {
+            Lib_PushTiming( Lib_ParseCtx() );
+            free( (yyvsp[-2].s) );
+        }
+#line 1602 "physLibertyYacc.c"
+    break;
+
+  case 11: /* stmt: LIB_TOK_TIMING '(' arglist ')' '{' $@4 stmts '}'  */
+#line 91 "physLibertyYacc.y"
+        {
+            Lib_ParsePop( Lib_ParseCtx() );
+        }
+#line 1610 "physLibertyYacc.c"
+    break;
+
+  case 12: /* $@5: %empty  */
+#line 95 "physLibertyYacc.y"
+        {
+            Lib_PushTemplate( Lib_ParseCtx(), (yyvsp[-2].s) );
+            free( (yyvsp[-2].s) );
+        }
+#line 1619 "physLibertyYacc.c"
+    break;
+
+  case 13: /* stmt: LIB_TOK_LU_TABLE_TEMPLATE '(' arglist ')' '{' $@5 stmts '}'  */
+#line 100 "physLibertyYacc.y"
+        {
+            Lib_ParsePop( Lib_ParseCtx() );
+        }
+#line 1627 "physLibertyYacc.c"
+    break;
+
+  case 14: /* $@6: %empty  */
+#line 104 "physLibertyYacc.y"
+        {
+            Lib_PushTable( Lib_ParseCtx(), 0, (yyvsp[-2].s) );
+            free( (yyvsp[-2].s) );
+        }
+#line 1636 "physLibertyYacc.c"
+    break;
+
+  case 15: /* stmt: LIB_TOK_CELL_RISE '(' arglist ')' '{' $@6 stmts '}'  */
+#line 109 "physLibertyYacc.y"
+        {
+            Lib_ParsePop( Lib_ParseCtx() );
+        }
+#line 1644 "physLibertyYacc.c"
+    break;
+
+  case 16: /* $@7: %empty  */
+#line 113 "physLibertyYacc.y"
+        {
+            Lib_PushTable( Lib_ParseCtx(), 1, (yyvsp[-2].s) );
+            free( (yyvsp[-2].s) );
+        }
+#line 1653 "physLibertyYacc.c"
+    break;
+
+  case 17: /* stmt: LIB_TOK_CELL_FALL '(' arglist ')' '{' $@7 stmts '}'  */
+#line 118 "physLibertyYacc.y"
+        {
+            Lib_ParsePop( Lib_ParseCtx() );
+        }
+#line 1661 "physLibertyYacc.c"
+    break;
+
+  case 18: /* $@8: %empty  */
+#line 122 "physLibertyYacc.y"
+        {
+            Lib_PushTable( Lib_ParseCtx(), 2, (yyvsp[-2].s) );
+            free( (yyvsp[-2].s) );
+        }
+#line 1670 "physLibertyYacc.c"
+    break;
+
+  case 19: /* stmt: LIB_TOK_RISE_TRANSITION '(' arglist ')' '{' $@8 stmts '}'  */
+#line 127 "physLibertyYacc.y"
+        {
+            Lib_ParsePop( Lib_ParseCtx() );
+        }
+#line 1678 "physLibertyYacc.c"
+    break;
+
+  case 20: /* $@9: %empty  */
+#line 131 "physLibertyYacc.y"
+        {
+            Lib_PushTable( Lib_ParseCtx(), 3, (yyvsp[-2].s) );
+            free( (yyvsp[-2].s) );
+        }
+#line 1687 "physLibertyYacc.c"
+    break;
+
+  case 21: /* stmt: LIB_TOK_FALL_TRANSITION '(' arglist ')' '{' $@9 stmts '}'  */
+#line 136 "physLibertyYacc.y"
+        {
+            Lib_ParsePop( Lib_ParseCtx() );
+        }
+#line 1695 "physLibertyYacc.c"
+    break;
+
+  case 22: /* $@10: %empty  */
+#line 140 "physLibertyYacc.y"
+        {
+            Lib_PushSequential( Lib_ParseCtx() );
+            free( (yyvsp[-2].s) );
+        }
+#line 1704 "physLibertyYacc.c"
+    break;
+
+  case 23: /* stmt: LIB_TOK_SEQUENTIAL '(' arglist ')' '{' $@10 stmts '}'  */
+#line 145 "physLibertyYacc.y"
+        {
+            Lib_ParsePop( Lib_ParseCtx() );
+        }
+#line 1712 "physLibertyYacc.c"
+    break;
+
+  case 24: /* stmt: LIB_TOK_INDEX_1 '(' arglist ')' ';'  */
+#line 149 "physLibertyYacc.y"
+        {
+            Lib_ParseIndex( Lib_ParseCtx(), 0, (yyvsp[-2].s) );
+            free( (yyvsp[-2].s) );
+        }
+#line 1721 "physLibertyYacc.c"
+    break;
+
+  case 25: /* stmt: LIB_TOK_INDEX_2 '(' arglist ')' ';'  */
+#line 154 "physLibertyYacc.y"
+        {
+            Lib_ParseIndex( Lib_ParseCtx(), 1, (yyvsp[-2].s) );
+            free( (yyvsp[-2].s) );
+        }
+#line 1730 "physLibertyYacc.c"
+    break;
+
+  case 26: /* stmt: LIB_TOK_VALUES '(' arglist ')' ';'  */
+#line 159 "physLibertyYacc.y"
+        {
+            Lib_ParseValues( Lib_ParseCtx(), (yyvsp[-2].s) );
+            free( (yyvsp[-2].s) );
+        }
+#line 1739 "physLibertyYacc.c"
+    break;
+
+  case 27: /* stmt: LIB_TOK_NAME ':' attr_values ';'  */
+#line 164 "physLibertyYacc.y"
         {
             Lib_ParseAttr( Lib_ParseCtx(), (yyvsp[-3].s), (yyvsp[-1].s) );
             free( (yyvsp[-3].s) );
             free( (yyvsp[-1].s) );
         }
-#line 1429 "physLibertyYacc.c"
+#line 1749 "physLibertyYacc.c"
     break;
 
-  case 5: /* stmt: LIB_TOK_NAME '(' arglist ')' ';'  */
-#line 41 "physLibertyYacc.y"
+  case 28: /* stmt: LIB_TOK_NAME '(' arglist ')' ';'  */
+#line 170 "physLibertyYacc.y"
         {
             Lib_ParseCall( Lib_ParseCtx(), (yyvsp[-4].s), (yyvsp[-2].s) );
             free( (yyvsp[-4].s) );
             free( (yyvsp[-2].s) );
         }
-#line 1439 "physLibertyYacc.c"
+#line 1759 "physLibertyYacc.c"
     break;
 
-  case 6: /* $@1: %empty  */
-#line 47 "physLibertyYacc.y"
+  case 29: /* $@11: %empty  */
+#line 176 "physLibertyYacc.y"
         {
-            Lib_ParsePush( Lib_ParseCtx(), (yyvsp[-4].s), (yyvsp[-2].s) );
+            Lib_PushIgnore( Lib_ParseCtx() );
             free( (yyvsp[-4].s) );
             free( (yyvsp[-2].s) );
         }
-#line 1449 "physLibertyYacc.c"
+#line 1769 "physLibertyYacc.c"
     break;
 
-  case 7: /* stmt: LIB_TOK_NAME '(' arglist ')' '{' $@1 stmts '}'  */
-#line 53 "physLibertyYacc.y"
+  case 30: /* stmt: LIB_TOK_NAME '(' arglist ')' '{' $@11 stmts '}'  */
+#line 182 "physLibertyYacc.y"
         {
             Lib_ParsePop( Lib_ParseCtx() );
         }
-#line 1457 "physLibertyYacc.c"
+#line 1777 "physLibertyYacc.c"
     break;
 
-  case 8: /* $@2: %empty  */
-#line 57 "physLibertyYacc.y"
+  case 31: /* $@12: %empty  */
+#line 186 "physLibertyYacc.y"
         {
-            Lib_ParsePush( Lib_ParseCtx(), (yyvsp[-1].s), "" );
+            Lib_PushIgnore( Lib_ParseCtx() );
             free( (yyvsp[-1].s) );
         }
-#line 1466 "physLibertyYacc.c"
+#line 1786 "physLibertyYacc.c"
     break;
 
-  case 9: /* stmt: LIB_TOK_NAME '{' $@2 stmts '}'  */
-#line 62 "physLibertyYacc.y"
+  case 32: /* stmt: LIB_TOK_NAME '{' $@12 stmts '}'  */
+#line 191 "physLibertyYacc.y"
         {
             Lib_ParsePop( Lib_ParseCtx() );
         }
-#line 1474 "physLibertyYacc.c"
+#line 1794 "physLibertyYacc.c"
     break;
 
-  case 10: /* stmt: LIB_TOK_NAME ';'  */
-#line 66 "physLibertyYacc.y"
+  case 33: /* stmt: LIB_TOK_NAME ';'  */
+#line 195 "physLibertyYacc.y"
         {
             free( (yyvsp[-1].s) );
         }
-#line 1482 "physLibertyYacc.c"
+#line 1802 "physLibertyYacc.c"
     break;
 
-  case 12: /* values: %empty  */
-#line 77 "physLibertyYacc.y"
+  case 35: /* stmt: error ';'  */
+#line 200 "physLibertyYacc.y"
+        {
+            Lib_ParseRecover( Lib_ParseCtx() );
+        }
+#line 1810 "physLibertyYacc.c"
+    break;
+
+  case 36: /* attr_values: %empty  */
+#line 210 "physLibertyYacc.y"
                               { (yyval.s) = Lib_StrDup( "" ); }
-#line 1488 "physLibertyYacc.c"
+#line 1816 "physLibertyYacc.c"
     break;
 
-  case 13: /* values: values value  */
-#line 78 "physLibertyYacc.y"
+  case 37: /* attr_values: attr_values attr_atom  */
+#line 211 "physLibertyYacc.y"
                               { (yyval.s) = Lib_StrCat( (yyvsp[-1].s), (yyvsp[0].s) ); free( (yyvsp[-1].s) ); free( (yyvsp[0].s) ); }
-#line 1494 "physLibertyYacc.c"
+#line 1822 "physLibertyYacc.c"
     break;
 
-  case 14: /* value: LIB_TOK_NAME  */
-#line 82 "physLibertyYacc.y"
+  case 38: /* attr_atom: LIB_TOK_NAME  */
+#line 215 "physLibertyYacc.y"
                               { (yyval.s) = (yyvsp[0].s); }
-#line 1500 "physLibertyYacc.c"
+#line 1828 "physLibertyYacc.c"
     break;
 
-  case 15: /* value: LIB_TOK_NUMBER  */
-#line 83 "physLibertyYacc.y"
+  case 39: /* attr_atom: LIB_TOK_NUMBER  */
+#line 216 "physLibertyYacc.y"
+                              { (yyval.s) = Lib_StrNum( (yyvsp[0].d) ); }
+#line 1834 "physLibertyYacc.c"
+    break;
+
+  case 40: /* attr_atom: LIB_TOK_STRING  */
+#line 217 "physLibertyYacc.y"
                               { (yyval.s) = (yyvsp[0].s); }
-#line 1506 "physLibertyYacc.c"
+#line 1840 "physLibertyYacc.c"
     break;
 
-  case 16: /* value: LIB_TOK_STRING  */
-#line 84 "physLibertyYacc.y"
-                              { (yyval.s) = (yyvsp[0].s); }
-#line 1512 "physLibertyYacc.c"
-    break;
-
-  case 17: /* value: '(' values ')'  */
-#line 85 "physLibertyYacc.y"
+  case 41: /* attr_atom: '(' attr_values ')'  */
+#line 218 "physLibertyYacc.y"
                               { (yyval.s) = Lib_StrWrap( "(", (yyvsp[-1].s), ")" ); free( (yyvsp[-1].s) ); }
-#line 1518 "physLibertyYacc.c"
+#line 1846 "physLibertyYacc.c"
     break;
 
-  case 18: /* value: ','  */
-#line 86 "physLibertyYacc.y"
+  case 42: /* attr_atom: ','  */
+#line 219 "physLibertyYacc.y"
                               { (yyval.s) = Lib_StrDup( "," ); }
-#line 1524 "physLibertyYacc.c"
+#line 1852 "physLibertyYacc.c"
     break;
 
-  case 19: /* arglist: %empty  */
-#line 90 "physLibertyYacc.y"
+  case 43: /* arglist: %empty  */
+#line 223 "physLibertyYacc.y"
                               { (yyval.s) = Lib_StrDup( "" ); }
-#line 1530 "physLibertyYacc.c"
+#line 1858 "physLibertyYacc.c"
     break;
 
-  case 20: /* arglist: argitems  */
-#line 91 "physLibertyYacc.y"
+  case 44: /* arglist: argitems  */
+#line 224 "physLibertyYacc.y"
                               { (yyval.s) = (yyvsp[0].s); }
-#line 1536 "physLibertyYacc.c"
+#line 1864 "physLibertyYacc.c"
     break;
 
-  case 21: /* argitems: argitem  */
-#line 95 "physLibertyYacc.y"
+  case 45: /* argitems: argitem  */
+#line 228 "physLibertyYacc.y"
                               { (yyval.s) = (yyvsp[0].s); }
-#line 1542 "physLibertyYacc.c"
+#line 1870 "physLibertyYacc.c"
     break;
 
-  case 22: /* argitems: argitems ',' argitem  */
-#line 96 "physLibertyYacc.y"
+  case 46: /* argitems: argitems ',' argitem  */
+#line 229 "physLibertyYacc.y"
                              { (yyval.s) = Lib_StrJoin( (yyvsp[-2].s), (yyvsp[0].s) ); free( (yyvsp[-2].s) ); free( (yyvsp[0].s) ); }
-#line 1548 "physLibertyYacc.c"
+#line 1876 "physLibertyYacc.c"
     break;
 
-  case 23: /* argitem: LIB_TOK_NAME  */
-#line 100 "physLibertyYacc.y"
+  case 47: /* argitem: LIB_TOK_NAME  */
+#line 233 "physLibertyYacc.y"
                               { (yyval.s) = (yyvsp[0].s); }
-#line 1554 "physLibertyYacc.c"
+#line 1882 "physLibertyYacc.c"
     break;
 
-  case 24: /* argitem: LIB_TOK_NUMBER  */
-#line 101 "physLibertyYacc.y"
+  case 48: /* argitem: LIB_TOK_NUMBER  */
+#line 234 "physLibertyYacc.y"
+                              { (yyval.s) = Lib_StrNum( (yyvsp[0].d) ); }
+#line 1888 "physLibertyYacc.c"
+    break;
+
+  case 49: /* argitem: LIB_TOK_STRING  */
+#line 235 "physLibertyYacc.y"
                               { (yyval.s) = (yyvsp[0].s); }
-#line 1560 "physLibertyYacc.c"
-    break;
-
-  case 25: /* argitem: LIB_TOK_STRING  */
-#line 102 "physLibertyYacc.y"
-                              { (yyval.s) = (yyvsp[0].s); }
-#line 1566 "physLibertyYacc.c"
+#line 1894 "physLibertyYacc.c"
     break;
 
 
-#line 1570 "physLibertyYacc.c"
+#line 1898 "physLibertyYacc.c"
 
       default: break;
     }
@@ -1790,5 +2118,5 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 105 "physLibertyYacc.y"
+#line 238 "physLibertyYacc.y"
 

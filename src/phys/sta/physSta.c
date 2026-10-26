@@ -244,8 +244,14 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
     float TotalWire = 0.0f, TotalWireCap = 0.0f, MaxNetDelay = 0.0f;
     int i, k, nCells = 0, nIns = 0, nNets = 0, nSinks = 0, nEndpoints;
     int iWorstNet = -1, nWorstSinks = 0;
-    if ( p == NULL || pGia == NULL )
+    if ( p == NULL || pGia == NULL || pPars == NULL )
         return 0;
+    if ( pPars->Period < 0.0f || pPars->InputSlew < 0.0f ||
+         pPars->WireRes < 0.0f || pPars->WireCap < 0.0f )
+    {
+        fprintf( stdout, "STA: negative timing or RC parameters are not supported.\n" );
+        return 0;
+    }
     if ( p->vObjToCell == NULL || Vec_PtrSize(p->vObjToCell) < nObjs )
     {
         fprintf( stdout, "STA: the network has not been bound. Run \"&phys_bind\" first.\n" );
@@ -257,9 +263,24 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
     RcR = RcC = 0.0f;
     if ( p->pLef != NULL )
     {
-        Phys_LefLayer_t * pLayer = Phys_LefFindRcLayer( p->pLef, pPars->pLayer );
+        Phys_LefLayer_t * pLayer;
+        if ( pPars->pLayer != NULL && strcmp( pPars->pLayer, "auto" ) )
+        {
+            pLayer = Phys_LefFindLayer( p->pLef, pPars->pLayer );
+            if ( pLayer == NULL )
+            {
+                fprintf( stdout, "STA: cannot find layer \"%s\" in the LEF data.\n", pPars->pLayer );
+                return 0;
+            }
+            if ( !pLayer->fRouting )
+                fprintf( stdout, "STA: warning: layer \"%s\" is not a routing layer.\n", pPars->pLayer );
+        }
+        else
+            pLayer = Phys_LefFindRcLayer( p->pLef, NULL );
         Phys_LefLayerRc( p->pLef, pLayer, &RcR, &RcC );
     }
+    else if ( pPars->pLayer != NULL && strcmp( pPars->pLayer, "auto" ) )
+        fprintf( stdout, "STA: no LEF data; the layer selection \"%s\" is ignored.\n", pPars->pLayer );
     if ( pPars->WireRes > 0.0f )
         RcR = pPars->WireRes;
     if ( pPars->WireCap > 0.0f )

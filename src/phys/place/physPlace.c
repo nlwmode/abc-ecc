@@ -742,8 +742,23 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     float x0, y0, W, H, Dbu, Anchor, AvgDiag;
     int i, k, q, nNodes = 0, nFree = 0, nEdges = 0, nOverlaps;
     unsigned Seed = 12345;
-    if ( p == NULL || pGia == NULL )
+    if ( p == NULL || pGia == NULL || pPars == NULL )
         return 0;
+    if ( pPars->Util <= 0.0f || pPars->Util > 1.0f )
+    {
+        fprintf( stdout, "Placement: target utilization %.3f should be in (0, 1].\n", pPars->Util );
+        return 0;
+    }
+    if ( pPars->Aspect <= 0.0f )
+    {
+        fprintf( stdout, "Placement: the core aspect ratio %.3f should be positive.\n", pPars->Aspect );
+        return 0;
+    }
+    if ( pPars->nIterCG < 1 || pPars->nIterRefine < 0 )
+    {
+        fprintf( stdout, "Placement: the number of conjugate-gradient rounds should be positive and the number of refinement rounds non-negative.\n" );
+        return 0;
+    }
     if ( p->vObjToCell == NULL || Vec_PtrSize(p->vObjToCell) < nObjs )
     {
         fprintf( stdout, "Placement: the network has not been bound. Run \"&phys_bind\" first.\n" );

@@ -3,6 +3,7 @@
 %option yylineno
 
 %{
+#include <stdlib.h>
 #include "physLefYacc.h"
 %}
 
@@ -33,9 +34,26 @@
 "ARRAY"                               { return LEF_TOK_ARRAY; }
 "END"                                 { return LEF_TOK_END; }
 
+"CLASS"                               { return LEF_TOK_CLASS; }
+"ORIGIN"                              { return LEF_TOK_ORIGIN; }
+"SIZE"                                { return LEF_TOK_SIZE; }
+"BY"                                  { return LEF_TOK_BY; }
+"DIRECTION"                           { return LEF_TOK_DIRECTION; }
+"USE"                                 { return LEF_TOK_USE; }
+"RECT"                                { return LEF_TOK_RECT; }
+"MASK"                                { return LEF_TOK_MASK; }
+"WIDTH"                               { return LEF_TOK_WIDTH; }
+"PITCH"                               { return LEF_TOK_PITCH; }
+"RESISTANCE"                          { return LEF_TOK_RESISTANCE; }
+"CAPACITANCE"                         { return LEF_TOK_CAPACITANCE; }
+"EDGECAPACITANCE"                     { return LEF_TOK_EDGECAPACITANCE; }
+"TYPE"                                { return LEF_TOK_TYPE; }
+"DATABASE"                            { return LEF_TOK_DATABASE; }
+"MANUFACTURINGGRID"                   { return LEF_TOK_MANUFACTURINGGRID; }
+
 \"([^\"\\]|\\[^\n])*\"                { Lef_lval.s = Lef_Unquote( yytext ); return LEF_TOK_STRING; }
 
-[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?  { Lef_lval.s = Lef_StrDup( yytext ); return LEF_TOK_NUMBER; }
+[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?  { Lef_lval.d = strtod( yytext, NULL ); return LEF_TOK_NUMBER; }
 
 [A-Za-z_][A-Za-z0-9_.\[\]\\/$]*        { Lef_lval.s = Lef_StrDup( yytext ); return LEF_TOK_NAME; }
 
