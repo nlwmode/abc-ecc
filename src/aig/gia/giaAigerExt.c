@@ -315,7 +315,14 @@ Vec_Str_t * Gia_AigerWriteCellMappingDoc( Gia_Man_t * p )
 {
     unsigned char * pBuffer;
     int i, nCells = 0, nInstances = 0, nSize = 8, nSize2 = 0;
-    Mio_Cell2_t * pCells = Mio_CollectRootsNewDefault2( 6, &nCells, 0 );
+    Vec_Mem_t * vTtMem = NULL;
+    Vec_Wec_t * vTt2Match = NULL;
+    Mio_Cell2_t * pCells = NULL;
+    /* Cell ids index the table used by the mapper.  Rebuild that same
+       table from the parameters saved with the mapping, so the all-gates
+       ids of physical mapping are not reinterpreted as root-gate ids. */
+    Mio_LibraryMatchesFetchDefault2( &vTtMem, &vTt2Match, &pCells, &nCells,
+        p->CellMatchPars[0], p->CellMatchPars[1], p->CellMatchPars[2], p->CellMatchPars[3] );
     assert( pCells );
 
     for (int i = 0; i < nCells; i++)
@@ -382,7 +389,7 @@ Vec_Str_t * Gia_AigerWriteCellMappingDoc( Gia_Man_t * p )
     }
 
     assert( nSize2 == nSize );
-    ABC_FREE( pCells );
+    /* pCells is owned and cached by the Mio library */
     return Vec_StrAllocArray( (char *)pBuffer, nSize );
 }
 

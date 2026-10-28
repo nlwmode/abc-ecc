@@ -38,6 +38,9 @@ typedef struct Phys_StaPars_t_
 extern void Phys_StaSetDefault( Phys_StaPars_t * p );
 extern int  Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars );
 extern void Phys_StaPrint( Phys_Man_t * p );
+/* Elmore delay of a point-to-point wire, in ps; uses the unit RC of the
+   last STA run and the given load capacitance in pF. */
+extern float Phys_StaWireDelay( Phys_Man_t * p, float x0, float y0, float x1, float y1, float Cload );
 
 ABC_NAMESPACE_HEADER_END
 

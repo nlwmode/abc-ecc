@@ -881,6 +881,99 @@ Mio_Cell2_t * Mio_CollectRootsNewDefault2( int nInputs, int * pnGates, int fVerb
 
 /**Function*************************************************************
 
+  Synopsis    [Collects all gates, keeping the drive strengths.]
+
+  Description [The root collector keeps only one gate per functionality,
+               which removes the drive strengths that physical mapping
+               needs to trade area for wire delay.  This collector keeps
+               every gate with the given input limit (except twins and
+               duplicate constants).  Slots 0..3 still hold the constant
+               zero, constant one, buffer and inverter, because the mapper
+               uses pCells[3] for its phase fix-up, and the rest is sorted
+               by area so that the smaller drives are matched first.  The
+               old Mio_Gate cell ids are cleared before the new ids are
+               assigned.]
+
+  SideEffects []
+
+***********************************************************************/
+Mio_Cell2_t * Mio_CollectAllNew2( Mio_Library_t * pLib, int nInputs, int * pnGates, int fVerbose )
+{
+    Mio_Gate_t * pGate;
+    Mio_Cell2_t * ppCells, Cell;
+    int fFound[4] = {0};
+    int i, nGates, iCell = 4;
+    nGates = Mio_LibraryReadGateNum( pLib );
+    ppCells = ABC_CALLOC( Mio_Cell2_t, nGates + 4 );
+    /* the four special slots used by the mapper */
+    Mio_LibraryForEachGate( pLib, pGate )
+    {
+        int Idx = -1;
+        if ( pGate->nInputs > nInputs || pGate->pTwin )
+            continue;
+        if ( pGate->uTruth == 0 )
+            Idx = 0;
+        else if ( pGate->uTruth == ~(word)0 )
+            Idx = 1;
+        else if ( pGate->nInputs == 1 &&
+                  (pGate->uTruth == ABC_CONST(0xAAAAAAAAAAAAAAAA) ||
+                   pGate->uTruth == ~ABC_CONST(0xAAAAAAAAAAAAAAAA)) )
+            Idx = 2 + (int)(pGate->uTruth == ~ABC_CONST(0xAAAAAAAAAAAAAAAA));
+        if ( Idx < 0 )
+            continue;
+        Mio_CollectCopy2( &Cell, pGate );
+        if ( !fFound[Idx] || Mio_CompareTwo2( ppCells + Idx, &Cell ) )
+            ppCells[Idx] = Cell;
+        fFound[Idx] = 1;
+    }
+    /* every other gate, including all drive strengths of buffers and
+       inverters; constants have only one usable representation */
+    Mio_LibraryForEachGate( pLib, pGate )
+    {
+        if ( pGate->nInputs > nInputs || pGate->pTwin )
+            continue;
+        if ( pGate->uTruth == 0 || pGate->uTruth == ~(word)0 )
+            continue;
+        Mio_CollectCopy2( ppCells + iCell, pGate );
+        iCell++;
+    }
+    if ( ppCells[0].pName == NULL )
+        { printf( "Error: Cannot find constant 0 gate in the library.\n" ); ABC_FREE(ppCells); return NULL; }
+    if ( ppCells[1].pName == NULL )
+        { printf( "Error: Cannot find constant 1 gate in the library.\n" ); ABC_FREE(ppCells); return NULL; }
+    if ( ppCells[2].pName == NULL )
+        { printf( "Error: Cannot find buffer gate in the library.\n" );     ABC_FREE(ppCells); return NULL; }
+    if ( ppCells[3].pName == NULL )
+        { printf( "Error: Cannot find inverter gate in the library.\n" );   ABC_FREE(ppCells); return NULL; }
+    if ( iCell > 5 )
+    {
+        qsort( (void *)(ppCells + 4), (size_t)(iCell - 4), sizeof(Mio_Cell2_t),
+                (int (*)(const void *, const void *)) Mio_AreaCompare2 );
+        assert( Mio_AreaCompare2( ppCells + 4, ppCells + iCell - 1 ) <= 0 );
+    }
+    /* assign IDs; ids are signed array indices, so the mapper and the
+       binder agree on the cell names */
+    Mio_LibraryForEachGate( pLib, pGate )
+        Mio_GateSetCell( pGate, -1 );
+    for ( i = 0; i < iCell; i++ )
+    {
+        ppCells[i].Id = ppCells[i].pName ? i : -1;
+        Mio_GateSetCell( (Mio_Gate_t *)ppCells[i].pMioGate, i );
+    }
+    if ( fVerbose )
+        printf( "All-gates collection: %d gates (%d inputs max), %d root slots.\n",
+                iCell - 4, nInputs, Abc_MinInt(iCell, 4) );
+    if ( pnGates )
+        *pnGates = iCell;
+    return ppCells;
+}
+Mio_Cell2_t * Mio_CollectAllNewDefault2( int nInputs, int * pnGates, int fVerbose )
+{
+    return Mio_CollectAllNew2( (Mio_Library_t *)Abc_FrameReadLibGen(), nInputs, pnGates, fVerbose );
+}
+
+/**Function*************************************************************
+
   Synopsis    [Derives the truth table of the gate.]
 
   Description []
@@ -1766,30 +1859,35 @@ void Mio_LibraryMatchesStop( Mio_Library_t * pLib )
     Vec_MemFree( pLib->vTtMem );
     ABC_FREE( pLib->pCells );
 }
-void Mio_LibraryMatchesStart( Mio_Library_t * pLib, int fPinFilter, int fPinPerm, int fPinQuick )
+void Mio_LibraryMatchesStart( Mio_Library_t * pLib, int fPinFilter, int fPinPerm, int fPinQuick, int fAllGates )
 {
-    extern Mio_Cell2_t * Nf_StoDeriveMatches( Vec_Mem_t * vTtMem, Vec_Wec_t * vTt2Match, int * pnCells, int fPinFilter, int fPinPerm, int fPinQuick );
-    if ( pLib->vTtMem && pLib->fPinFilter == fPinFilter && pLib->fPinPerm == fPinPerm && pLib->fPinQuick == fPinQuick )
+    extern Mio_Cell2_t * Nf_StoDeriveMatches( Vec_Mem_t * vTtMem, Vec_Wec_t * vTt2Match, int * pnCells, int fPinFilter, int fPinPerm, int fPinQuick, int fAllGates );
+    if ( pLib->vTtMem && pLib->fPinFilter == fPinFilter && pLib->fPinPerm == fPinPerm && pLib->fPinQuick == fPinQuick && pLib->fAllGates == fAllGates )
         return;
     if ( pLib->vTtMem )
         Mio_LibraryMatchesStop( pLib );
     pLib->fPinFilter = fPinFilter;  // pin filtering
     pLib->fPinPerm   = fPinPerm;    // pin permutation
     pLib->fPinQuick  = fPinQuick;   // pin permutation
-    pLib->vTtMem     = Vec_MemAllocForTT( 6, 0 );          
-    pLib->vTt2Match  = Vec_WecAlloc( 1000 ); 
+    pLib->fAllGates  = fAllGates;   // keep the drive strengths
+    pLib->vTtMem     = Vec_MemAllocForTT( 6, 0 );
+    pLib->vTt2Match  = Vec_WecAlloc( 1000 );
     Vec_WecPushLevel( pLib->vTt2Match );
     Vec_WecPushLevel( pLib->vTt2Match );
     assert( Vec_WecSize(pLib->vTt2Match) == Vec_MemEntryNum(pLib->vTtMem) );
-    pLib->pCells = Nf_StoDeriveMatches( pLib->vTtMem, pLib->vTt2Match, &pLib->nCells, fPinFilter, fPinPerm, fPinQuick );
+    pLib->pCells = Nf_StoDeriveMatches( pLib->vTtMem, pLib->vTt2Match, &pLib->nCells, fPinFilter, fPinPerm, fPinQuick, fAllGates );
 }
-void Mio_LibraryMatchesFetch( Mio_Library_t * pLib, Vec_Mem_t ** pvTtMem, Vec_Wec_t ** pvTt2Match, Mio_Cell2_t ** ppCells, int * pnCells, int fPinFilter, int fPinPerm, int fPinQuick )
+void Mio_LibraryMatchesFetch( Mio_Library_t * pLib, Vec_Mem_t ** pvTtMem, Vec_Wec_t ** pvTt2Match, Mio_Cell2_t ** ppCells, int * pnCells, int fPinFilter, int fPinPerm, int fPinQuick, int fAllGates )
 {
-    Mio_LibraryMatchesStart( pLib, fPinFilter, fPinPerm, fPinQuick );
+    Mio_LibraryMatchesStart( pLib, fPinFilter, fPinPerm, fPinQuick, fAllGates );
     *pvTtMem    = pLib->vTtMem;     // truth tables
     *pvTt2Match = pLib->vTt2Match;  // matches for truth tables
     *ppCells    = pLib->pCells;     // library gates
     *pnCells    = pLib->nCells;     // library gate count
+}
+void Mio_LibraryMatchesFetchDefault2( Vec_Mem_t ** pvTtMem, Vec_Wec_t ** pvTt2Match, Mio_Cell2_t ** ppCells, int * pnCells, int fPinFilter, int fPinPerm, int fPinQuick, int fAllGates )
+{
+    Mio_LibraryMatchesFetch( (Mio_Library_t *)Abc_FrameReadLibGen(), pvTtMem, pvTt2Match, ppCells, pnCells, fPinFilter, fPinPerm, fPinQuick, fAllGates );
 }
 
 /**Function*************************************************************

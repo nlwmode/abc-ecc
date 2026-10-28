@@ -81,6 +81,7 @@ struct  Mio_LibraryStruct_t_
     int                fPinFilter;  // pin filtering
     int                fPinPerm;    // pin permutation
     int                fPinQuick;   // pin permutation
+    int                fAllGates;   // collect all gates, not just roots
     Vec_Mem_t *        vTtMem;      // truth tables
     Vec_Wec_t *        vTt2Match;   // matches for truth tables
     Mio_Cell2_t *      pCells;      // library gates

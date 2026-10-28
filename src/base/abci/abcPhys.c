@@ -33,6 +33,7 @@
 #include "phys/place/physPlace.h"
 #include "phys/place/physDump.h"
 #include "phys/sta/physSta.h"
+#include "phys/map/physMap.h"
 #include "abcPhys.h"
 
 ABC_NAMESPACE_IMPL_START
@@ -494,7 +495,16 @@ static int Abc_PhysInstallGenlib( Abc_Frame_t * pAbc, int fVerbose )
                data is converted into genlib and installed as the
                standard-cell library, so that the existing mappers can
                be used unchanged.  The &phys_* commands are only valid
-               while a session is open.]
+               while a session is open.
+
+               A session on an unmapped AIG runs
+                   &phys_start; &phys_bind; &phys_place; &phys_sta;
+                   &phys_map; &phys_end
+               &phys_bind puts a virtual cell on every AIG node, so
+               &phys_place and &phys_sta give the unmapped network
+               coordinates and a delay; &phys_map then maps it with the
+               physical cut ranking.  To feed the result back, repeat
+               &phys_place; &phys_sta; &phys_map inside the session.]
 
   SideEffects []
 
@@ -545,6 +555,8 @@ usage:
     Abc_Print( -2, "usage: &phys_start [-vh]\n" );
     Abc_Print( -2, "\t          opens a physical-synthesis session\n" );
     Abc_Print( -2, "\t          (requires that \"read_liberty\" has been run)\n" );
+    Abc_Print( -2, "\t          the flow is &phys_start; &phys_bind; &phys_place;\n" );
+    Abc_Print( -2, "\t          &phys_sta; &phys_map; &phys_end\n" );
     Abc_Print( -2, "\t-v      : print detailed information [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );
     return 1;
@@ -607,19 +619,198 @@ usage:
 
 /**Function*************************************************************
 
-  Synopsis    [Binds the cells of the current Gia mapping to Liberty cells
-               and LEF macros]
+  Synopsis    [Counts the usable inputs and outputs of a Liberty cell]
 
-  Description [The Gia network must have a cell mapping produced by
-               &nf (or by &phys_map).  The genlib cell names are matched
-               against Liberty cell names, the pins of each gate are
-               matched by name against the Liberty pins in fanin order,
-               and the LEF macro is looked up by the Liberty cell name.]
+  Description [Returns 0 for a sequential or dont-use cell, which cannot
+               model a combinational AIG node.  For the remaining cells
+               the numbers of input and output pins are returned, together
+               with a flag telling whether the last output has timing
+               arcs, which the timing analysis needs to see a delay.]
 
   SideEffects []
 
 ***********************************************************************/
-static int Abc_PhysBind( Abc_Frame_t * pAbc, int fVerbose )
+static int Abc_PhysCellPins( Phys_LibCell_t * pCell, int * pnIn, int * pnOut, int * pfArc )
+{
+    Phys_LibPin_t * pPin;
+    int k, nIn = 0, nOut = 0, fArc = 0;
+    *pnIn = *pnOut = *pfArc = 0;
+    if ( pCell->fSequential || pCell->fDontUse )
+        return 0;
+    Vec_PtrForEachEntry( Phys_LibPin_t *, pCell->vPins, pPin, k )
+    {
+        if ( pPin->Dir == 0 )
+            nIn++;
+        else if ( pPin->Dir == 1 )
+        {
+            nOut++;
+            fArc = pPin->vArcs != NULL && Vec_PtrSize(pPin->vArcs) > 0;
+        }
+    }
+    *pnIn = nIn;
+    *pnOut = nOut;
+    *pfArc = fArc;
+    return 1;
+}
+
+
+/**Function*************************************************************
+
+  Synopsis    [Selects the cell that models an unmapped AIG node]
+
+  Description [Before technology mapping every AIG node is bound to one
+               copy of a small two-input combinational cell, so that the
+               placer and the timing analysis have a geometry and a delay
+               model for it.  The smallest cell with two inputs, one
+               output and timing arcs wins; the choice only sets the
+               relative positions of the AIG nodes and does not restrict
+               the mapping.]
+
+  SideEffects []
+
+***********************************************************************/
+static Phys_LibCell_t * Abc_PhysVirtualCell( Phys_Lib_t * pLib )
+{
+    Phys_LibCell_t * pBest = NULL, * pCell;
+    int i, nIn, nOut, fArc, fBestArc = 0;
+    if ( pLib == NULL )
+        return NULL;
+    Vec_PtrForEachEntry( Phys_LibCell_t *, pLib->vCells, pCell, i )
+    {
+        if ( !Abc_PhysCellPins( pCell, &nIn, &nOut, &fArc ) )
+            continue;
+        if ( nIn != 2 || nOut != 1 )
+            continue;
+        if ( pBest == NULL || (fArc && !fBestArc) ||
+             (fArc == fBestArc && pCell->Area < pBest->Area) )
+            pBest = pCell, fBestArc = fArc;
+    }
+    return pBest;
+}
+
+
+/**Function*************************************************************
+
+  Synopsis    [Binds every AIG node to a virtual cell before mapping]
+
+  Description [The mapping is not available yet, but &phys_place and
+               &phys_sta need a netlist: every internal AIG node becomes
+               one instance of the virtual cell, and the nets are the AIG
+               nets.  The fanins of such an object are read from the AIG
+               (see Phys_ManObjFaninNum); the cell literal stays negative,
+               which is how the placer and the timing analysis tell a
+               virtual instance from a mapped cell.]
+
+  SideEffects []
+
+***********************************************************************/
+static int Abc_PhysBindVirtual( Abc_Frame_t * pAbc, const char * pCellName, int fVerbose )
+{
+    Phys_Man_t * pMan = (Phys_Man_t *)pAbc->pPhysMan;
+    Gia_Man_t * pGia = pAbc->pGia;
+    Phys_LibCell_t * pCell = NULL;
+    Phys_LefMacro_t * pMacro = NULL;
+    Phys_LibPin_t * pPin;
+    Vec_Ptr_t * vPins;
+    int nObjs = Gia_ManObjNum( pGia );
+    int i, k, nBound = 0, nBuf = 0, nMux = 0;
+    if ( pCellName != NULL )
+    {
+        int nIn, nOut, fArc;
+        pCell = Phys_LibFindCell( (Phys_Lib_t *)pMan->pLib, pCellName );
+        if ( pCell == NULL )
+        {
+            Abc_Print( -1, "Cannot find the Liberty cell \"%s\" to model the AIG nodes.\n", pCellName );
+            return 1;
+        }
+        if ( pCell->fSequential || pCell->fDontUse )
+        {
+            Abc_Print( -1, "Cannot model the AIG nodes with \"%s\": the cell is %s.\n", pCell->pName,
+                       pCell->fSequential ? "sequential" : "marked dont-use" );
+            return 1;
+        }
+        Abc_PhysCellPins( pCell, &nIn, &nOut, &fArc );
+        if ( nIn != 2 || nOut != 1 )
+        {
+            Abc_Print( -1, "Cannot model the AIG nodes with \"%s\": it has %d input(s) and %d output(s), "
+                           "while the model needs two inputs and one output.\n", pCell->pName, nIn, nOut );
+            return 1;
+        }
+    }
+    else
+        pCell = Abc_PhysVirtualCell( (Phys_Lib_t *)pMan->pLib );
+    if ( pCell == NULL )
+    {
+        Abc_Print( -1, "The Liberty library has no two-input combinational cell to model the AIG nodes.\n" );
+        return 1;
+    }
+    Phys_ManResize( pMan, 2 * nObjs );
+    Phys_ManLitResize( pMan, 2 * nObjs, 0 );
+    if ( pMan->pLef != NULL )
+    {
+        pMacro = Phys_LefFindMacro( pMan->pLef, pCell->pName );
+        if ( pMacro != NULL )
+            pCell->MacroId = pMacro->Id;
+    }
+    vPins = Vec_PtrAlloc( 2 );
+    Vec_PtrForEachEntry( Phys_LibPin_t *, pCell->vPins, pPin, k )
+        if ( pPin->Dir == 0 )
+            Vec_PtrPush( vPins, pPin );
+    assert( Vec_PtrSize(vPins) == 2 );
+    for ( i = 1; i < nObjs; i++ )
+    {
+        Gia_Obj_t * pObj = Gia_ManObj( pGia, i );
+        Vec_Ptr_t * vPinsCopy;
+        if ( !Gia_ObjIsAnd(pObj) )
+            continue;
+        if ( Gia_ObjIsBuf(pObj) )
+            nBuf++;
+        else if ( Gia_ObjIsMuxId(pGia, i) )
+            nMux++;
+        vPinsCopy = Vec_PtrAlloc( Vec_PtrSize(vPins) );
+        for ( k = 0; k < Vec_PtrSize(vPins); k++ )
+            Vec_PtrPush( vPinsCopy, Vec_PtrEntry(vPins, k) );
+        Vec_PtrWriteEntry( pMan->vObjToCell, i, pCell );
+        /* the virtual cell drives the positive literal of the AIG node;
+           the pins are owned by the literal array */
+        Vec_PtrWriteEntry( pMan->vLitToCell, 2 * i, pCell );
+        Vec_PtrWriteEntry( pMan->vLitToPins, 2 * i, vPinsCopy );
+        nBound++;
+    }
+    Vec_PtrFree( vPins );
+    if ( fVerbose && pMacro != NULL )
+        Abc_Print( 1, "Virtual cell \"%s\": LEF macro %d x %d DBU.\n",
+                   pCell->pName, pMacro->Width, pMacro->Height );
+    if ( fVerbose && nBuf )
+        Abc_Print( 1, "Binding: %d buffers are modeled as one-input cells.\n", nBuf );
+    if ( nMux )
+        Abc_Print( 0, "Binding: the virtual two-input cell does not model the select input of "
+                      "%d mux node(s); the placement sees all three fanins, the timing analysis "
+                      "sees only two. Run \"&phys_map\" before relying on the mux timing.\n", nMux );
+    Abc_Print( 1, "Bound %d AIG nodes to the virtual cell \"%s\" (%.3f um^2); "
+                  "the network is mapped by \"&phys_map\".\n", nBound, pCell->pName, pCell->Area );
+    return 0;
+}
+
+
+/**Function*************************************************************
+
+  Synopsis    [Binds the cells of the current Gia mapping to Liberty cells
+               and LEF macros]
+
+  Description [When the Gia network has a cell mapping produced by &nf
+               (or by &phys_map), the genlib cell names are matched
+               against Liberty cell names, the pins of each gate are
+               matched by name against the Liberty pins in fanin order,
+               and the LEF macro is looked up by the Liberty cell name.
+               Without a mapping, every AIG node is bound to a virtual
+               cell, so that the unmapped network can be placed and timed
+               before &phys_map selects the gates.]
+
+  SideEffects []
+
+***********************************************************************/
+static int Abc_PhysBind( Abc_Frame_t * pAbc, const char * pCellName, int fVerbose )
 {
     Phys_Man_t * pMan = (Phys_Man_t *)pAbc->pPhysMan;
     Gia_Man_t * pGia = pAbc->pGia;
@@ -628,36 +819,65 @@ static int Abc_PhysBind( Abc_Frame_t * pAbc, int fVerbose )
     Vec_Mem_t * vTtMem = NULL;
     Vec_Wec_t * vTt2Match = NULL;
     int nObjs = Gia_ManObjNum( pGia );
-    int nCells = 0, i, c, nBound = 0, nDup = 0, nSkip = 0, nNoLib = 0, nNoMacro = 0;
+    int nCells = 0, i, nBound = 0, nInv = 0, nBuf = 0, nSkip = 0, nNoLib = 0, nNoMacro = 0;
+    if ( pGia->vCellMapping == NULL )
+        return Abc_PhysBindVirtual( pAbc, pCellName, fVerbose );
+    if ( pCellName != NULL && fVerbose )
+        Abc_Print( 1, "The network is mapped; the virtual-cell option \"%s\" is not used.\n", pCellName );
     pMio = (Mio_Library_t *)Abc_FrameReadLibGen();
-    Mio_LibraryMatchesFetch( pMio, &vTtMem, &vTt2Match, &pCells, &nCells, 0, 0, 0 );
+    /* the mapping may have been produced with more than one gate per
+       functionality; the cell ids then index that same table, so fetch it
+       with the parameters stored next to the mapping */
+    Mio_LibraryMatchesFetch( pMio, &vTtMem, &vTt2Match, &pCells, &nCells,
+                             pGia->CellMatchPars[0], pGia->CellMatchPars[1],
+                             pGia->CellMatchPars[2], pGia->CellMatchPars[3] );
     if ( pCells == NULL )
     {
         Abc_Print( -1, "The current genlib library has no matches.\n" );
         return 1;
     }
     Phys_ManResize( pMan, 2 * nObjs );
-    /* a node can be mapped in both polarities (two cells at the same Gia
-       object); the per-object model keeps the first one, preferring the
-       non-inverted polarity, and reports the other ones */
-    for ( c = 0; c < 2; c++ )
-    for ( i = 2 + c; i < 2 * nObjs; i += 2 )
+    Phys_ManLitResize( pMan, 2 * nObjs, 1 );
+    /* Every non-zero entry of the cell mapping is one cell instance: a
+       gate record (> 0), a buffer (-2) or an inverter (-1).  A Gia object
+       can drive both of its literals (a gate plus an output inverter, or
+       two gates for the two phases), so the instances are keyed by the
+       output literal.  The object-level binding keeps one instance per
+       object for the views that are still per object. */
+    for ( i = 2; i < 2 * nObjs; i++ )
     {
         Phys_LibCell_t * pCell;
         Phys_LefMacro_t * pMacro;
         Vec_Ptr_t * vPins;
         Mio_Gate_t * pGate;
-        int iObj, iCell, k, nFanins, nPins;
-        if ( Vec_IntEntry( pGia->vCellMapping, i ) <= 0 )
+        int iCell, k, nFanins, nPins, Entry = Vec_IntEntry( pGia->vCellMapping, i );
+        if ( Entry == 0 )
             continue;
-        iObj = Abc_Lit2Var( i );
-        if ( Vec_PtrEntry( pMan->vObjToCell, iObj ) != NULL )
+        if ( Entry > 0 )
         {
-            nDup++;
-            continue;
+            iCell = Gia_ObjCellId( pGia, i );
+            if ( iCell < 0 || iCell >= nCells )
+            {
+                nSkip++;
+                continue;
+            }
+            nFanins = Gia_ObjCellSize( pGia, i );
         }
-        iCell = Gia_ObjCellId( pGia, i );
-        if ( iCell < 0 || iCell >= nCells )
+        else if ( Entry == -1 || Entry == -2 )
+        {
+            /* the mapper adds the inverter and the buffer implicitly;
+               slots 2 and 3 of the match table hold them */
+            iCell = Entry == -1 ? 3 : 2;
+            if ( iCell >= nCells )
+            {
+                nSkip++;
+                continue;
+            }
+            nFanins = 1;
+            if ( Entry == -1 ) nInv++;
+            else               nBuf++;
+        }
+        else
         {
             nSkip++;
             continue;
@@ -671,8 +891,7 @@ static int Abc_PhysBind( Abc_Frame_t * pAbc, int fVerbose )
                 Abc_Print( 0, "Cannot find Liberty cell \"%s\".\n", pCells[iCell].pName );
             continue;
         }
-        nFanins = Gia_ObjCellSize( pGia, i );
-        nPins   = Mio_GateReadPinNum( pGate );
+        nPins = Mio_GateReadPinNum( pGate );
         if ( nFanins > nPins )
         {
             Abc_Print( -1, "Internal error: cell \"%s\" has %d fanins but %d pins.\n",
@@ -682,9 +901,8 @@ static int Abc_PhysBind( Abc_Frame_t * pAbc, int fVerbose )
         vPins = Vec_PtrAlloc( nFanins );
         for ( k = 0; k < nFanins; k++ )
             Vec_PtrPush( vPins, Phys_LibCellFindPin( pCell, Mio_GateReadPinName(pGate, k) ) );
-        Vec_PtrWriteEntry( pMan->vObjToCell, iObj, pCell );
-        Vec_PtrWriteEntry( pMan->vObjToPins, iObj, vPins );
-        Vec_IntWriteEntry( pMan->vObjCellLit, iObj, i );
+        Vec_PtrWriteEntry( pMan->vLitToCell, i, pCell );
+        Vec_PtrWriteEntry( pMan->vLitToPins, i, vPins );
         if ( pMan->pLef != NULL )
         {
             pMacro = Phys_LefFindMacro( pMan->pLef, pCell->pName );
@@ -695,21 +913,44 @@ static int Abc_PhysBind( Abc_Frame_t * pAbc, int fVerbose )
         }
         nBound++;
     }
-    if ( fVerbose && nDup )
-        Abc_Print( 1, "Binding: %d additional cells share a node with another cell and are not modeled yet.\n", nDup );
-    Abc_Print( 1, "Bound %d cells to Liberty/LEF (%d not found in Liberty, %d bad cell ids, %d without LEF macro).\n",
+    for ( i = 1; i < nObjs; i++ )
+    {
+        int l0 = 2 * i, l1 = l0 + 1, lit = -1;
+        if ( Vec_IntEntry( pGia->vCellMapping, l0 ) > 0 )
+            lit = l0;
+        else if ( Vec_IntEntry( pGia->vCellMapping, l1 ) > 0 )
+            lit = l1;
+        else if ( Vec_IntEntry( pGia->vCellMapping, l0 ) != 0 )
+            lit = l0;
+        else if ( Vec_IntEntry( pGia->vCellMapping, l1 ) != 0 )
+            lit = l1;
+        if ( lit < 0 || Vec_PtrEntry( pMan->vLitToCell, lit ) == NULL )
+            continue;
+        /* the pins stay owned by the literal arrays */
+        Vec_PtrWriteEntry( pMan->vObjToCell, i, Vec_PtrEntry( pMan->vLitToCell, lit ) );
+        Vec_IntWriteEntry( pMan->vObjCellLit, i, lit );
+    }
+    if ( fVerbose )
+        Abc_Print( 1, "Binding: %d gate, %d inverter and %d buffer instances.\n",
+                   nBound - nInv - nBuf, nInv, nBuf );
+    Abc_Print( 1, "Bound %d cell instances to Liberty/LEF (%d not found in Liberty, %d bad cell ids, %d without LEF macro).\n",
                nBound, nNoLib, nSkip, nNoMacro );
     return 0;
 }
 
 int Abc_CommandPhysBind( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
+    char * pCellName = NULL;
     int c, fVerbose = 0;
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "vh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "c:vh" )) != EOF )
     {
         switch ( c )
         {
+        case 'c':
+            if ( globalUtilOptarg == NULL ) goto usage;
+            pCellName = (char *)globalUtilOptarg;
+            break;
         case 'v':
             fVerbose ^= 1;
             break;
@@ -731,22 +972,21 @@ int Abc_CommandPhysBind( Abc_Frame_t * pAbc, int argc, char ** argv )
         Abc_Print( -1, "There is no Gia network. Read one with \"&read\" first.\n" );
         return 1;
     }
-    if ( pAbc->pGia->vCellMapping == NULL )
-    {
-        Abc_Print( -1, "The Gia network has no cell mapping. Run \"&nf\" (or \"&phys_map\") first.\n" );
-        return 1;
-    }
     if ( Abc_FrameReadLibGen() == NULL )
     {
         Abc_Print( -1, "The genlib library is not installed. Run \"&phys_start\" first.\n" );
         return 1;
     }
-    return Abc_PhysBind( pAbc, fVerbose );
+    return Abc_PhysBind( pAbc, pCellName, fVerbose );
 
 usage:
-    Abc_Print( -2, "usage: &phys_bind [-vh]\n" );
-    Abc_Print( -2, "\t          binds the mapped Gia cells to Liberty cells and LEF macros\n" );
-    Abc_Print( -2, "\t          (the Gia network must be mapped by \"&nf\" first)\n" );
+    Abc_Print( -2, "usage: &phys_bind [-c cell] [-vh]\n" );
+    Abc_Print( -2, "\t          binds the Gia network to Liberty cells and LEF macros\n" );
+    Abc_Print( -2, "\t          a mapped network binds its real cells; an unmapped AIG\n" );
+    Abc_Print( -2, "\t          binds every node to a virtual cell, so that it can be\n" );
+    Abc_Print( -2, "\t          placed and timed before \"&phys_map\"\n" );
+    Abc_Print( -2, "\t-c cell : Liberty cell that models the AIG nodes before mapping\n" );
+    Abc_Print( -2, "\t          [default = smallest two-input combinational cell]\n" );
     Abc_Print( -2, "\t-v      : print detailed information [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );
     return 1;
@@ -757,11 +997,13 @@ usage:
 
   Synopsis    [&phys_place command]
 
-  Description [Analytically places the mapped and bound Gia netlist.
-               A quadratic solver provides the starting point; the
-               RePlAce/DREAMPlace nonlinear placement then minimizes the
-               log-sum-exp wirelength plus an electrostatic density
-               penalty, and the result is legalized into the rows.]
+  Description [Analytically places the bound Gia netlist: a mapped
+               netlist after &nf/&phys_map, or the AIG nodes bound to
+               virtual cells by &phys_bind before mapping.  A quadratic
+               solver provides the starting point; the RePlAce/DREAMPlace
+               nonlinear placement then minimizes the log-sum-exp
+               wirelength plus an electrostatic density penalty, and the
+               result is legalized into the rows.]
 
   SideEffects []
 
@@ -773,7 +1015,7 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
     Phys_PlaceSetDefault( &Def );
     Pars = Def;
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "u:a:i:s:o:vh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "u:a:i:s:o:g:vh" )) != EOF )
     {
         switch ( c )
         {
@@ -796,6 +1038,15 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
         case 'o':
             if ( globalUtilOptarg == NULL ) goto usage;
             Pars.StopOverflow = (float)atof( globalUtilOptarg );
+            break;
+        case 'g':
+            if ( globalUtilOptarg == NULL ) goto usage;
+            Pars.nCongBins = atoi( globalUtilOptarg );
+            if ( Pars.nCongBins < 1 || Pars.nCongBins > 2048 )
+            {
+                Abc_Print( -1, "The number of congestion bins should be in [1, 2048].\n" );
+                goto usage;
+            }
             break;
         case 'v':
             fVerbose ^= 1;
@@ -824,13 +1075,15 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: &phys_place [-u num] [-a num] [-i num] [-s num] [-o num] [-vh]\n" );
-    Abc_Print( -2, "\t          places the mapped and bound Gia netlist\n" );
+    Abc_Print( -2, "usage: &phys_place [-u num] [-a num] [-i num] [-s num] [-o num] [-g num] [-vh]\n" );
+    Abc_Print( -2, "\t          places the bound Gia netlist (virtual AIG cells before\n" );
+    Abc_Print( -2, "\t          mapping, mapped standard cells afterwards)\n" );
     Abc_Print( -2, "\t-u num  : target core utilization, 0 < num <= 1 [default = %.2f]\n", Def.Util );
     Abc_Print( -2, "\t-a num  : core height / width [default = %.2f]\n", Def.Aspect );
     Abc_Print( -2, "\t-i num  : conjugate-gradient iterations [default = %d]\n", Def.nIterCG );
     Abc_Print( -2, "\t-s num  : nonlinear placement iterations [default = %d]\n", Def.nIterNest );
     Abc_Print( -2, "\t-o num  : density overflow at which to stop [default = %.2f]\n", Def.StopOverflow );
+    Abc_Print( -2, "\t-g num  : RUDY bins along the longer core side [default = %d]\n", Def.nCongBins );
     Abc_Print( -2, "\t-v      : print detailed information [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );
     return 1;
@@ -929,8 +1182,10 @@ usage:
   Description [Writes a snapshot of the current placement into a debug
                workspace: a picture of the placement, the cell and net
                tables, the bin density, the row occupancy, and a record
-               in the per-design log.  See phys/place/physDump.h for the
-               layout of the workspace.]
+               in the per-design log.  When "&phys_sta" has run, the
+               critical path is traced and drawn in saturated magenta on
+               top of the cells, and listed in critical_path.csv.  See
+               phys/place/physDump.h for the layout of the workspace.]
 
   SideEffects [Creates directories and files]
 
@@ -941,7 +1196,7 @@ int Abc_CommandPhysDump( Abc_Frame_t * pAbc, int argc, char ** argv )
     int c, fVerbose = 0;
     Phys_DumpSetDefault( &Pars );
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "o:n:t:m:b:vh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "o:n:t:m:b:g:vh" )) != EOF )
     {
         switch ( c )
         {
@@ -964,6 +1219,10 @@ int Abc_CommandPhysDump( Abc_Frame_t * pAbc, int argc, char ** argv )
         case 'b':
             if ( globalUtilOptarg == NULL ) goto usage;
             Pars.nBins = atoi( globalUtilOptarg );
+            break;
+        case 'g':
+            if ( globalUtilOptarg == NULL ) goto usage;
+            Pars.nCongBins = atoi( globalUtilOptarg );
             break;
         case 'v':
             fVerbose ^= 1;
@@ -992,7 +1251,7 @@ int Abc_CommandPhysDump( Abc_Frame_t * pAbc, int argc, char ** argv )
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: &phys_dump [-o dir] [-n name] [-t tag] [-m num] [-b num] [-vh]\n" );
+    Abc_Print( -2, "usage: &phys_dump [-o dir] [-n name] [-t tag] [-m num] [-b num] [-g num] [-vh]\n" );
     Abc_Print( -2, "\t          writes a snapshot of the placement into a debug workspace\n" );
     Abc_Print( -2, "\t          (the workspace and the design directory are created if missing)\n" );
     Abc_Print( -2, "\t-o dir  : workspace directory in the current directory [default = %s]\n", "phys_ws" );
@@ -1000,6 +1259,7 @@ usage:
     Abc_Print( -2, "\t-t tag  : snapshot tag, giving the names of the files [default = %s]\n", "placement" );
     Abc_Print( -2, "\t-m num  : longest nets to draw in the picture, 0 for none [default = %d]\n", 2000 );
     Abc_Print( -2, "\t-b num  : density bins along the longer side [default = %d]\n", 32 );
+    Abc_Print( -2, "\t-g num  : RUDY routability bins along the longer side [default = %d]\n", 64 );
     Abc_Print( -2, "\t-v      : print detailed information [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );
     return 1;
@@ -1008,72 +1268,31 @@ usage:
 
 /**Function*************************************************************
 
-  Synopsis    [Derives a coordinate for every Gia object]
-
-  Description [Bound cells, primary inputs and primary outputs take the
-               coordinates computed by the placement.  The internal AIG
-               nodes, which do not have a position of their own, inherit
-               the average of their fanins, so that every object used as
-               a cut leaf has a finite coordinate.]
-
-  SideEffects []
-
-***********************************************************************/
-static void Abc_PhysMapCoords( Phys_Man_t * pMan, Gia_Man_t * pGia, float * pX, float * pY )
-{
-    int nObjs = Gia_ManObjNum( pGia );
-    float Dbu = (float)(pMan->pLef ? pMan->pLef->Units.Dbu : 1000);
-    int i, k, nFans;
-    for ( i = 0; i < nObjs; i++ )
-        pX[i] = pY[i] = -1.0f;
-    for ( i = 1; i < nObjs; i++ )
-    {
-        Gia_Obj_t * pObj = Gia_ManObj( pGia, i );
-        if ( pMan->fPlaced && i < Vec_IntSize(pMan->vObjX) &&
-             Vec_IntEntry(pMan->vObjX, i) >= 0 )
-        {
-            pX[i] = (float)Vec_IntEntry( pMan->vObjX, i ) / Dbu;
-            pY[i] = (float)Vec_IntEntry( pMan->vObjY, i ) / Dbu;
-            continue;
-        }
-        if ( Gia_ObjIsPi(pGia, pObj) )
-        {
-            pX[i] = pY[i] = 0.0f;
-            continue;
-        }
-        if ( !Gia_ObjIsAnd(pObj) )
-            continue;
-        nFans = Gia_ObjIsMuxId( pGia, i ) ? 3 : 2;
-        {
-            float SumX = 0.0f, SumY = 0.0f;
-            int nKnown = 0;
-            for ( k = 0; k < nFans; k++ )
-            {
-                int d = k == 0 ? Gia_ObjFaninId0(pObj, i) :
-                        k == 1 ? Gia_ObjFaninId1(pObj, i) : Gia_ObjFaninId2(pGia, i);
-                if ( d > 0 && pX[d] >= 0.0f )
-                    SumX += pX[d], SumY += pY[d], nKnown++;
-            }
-            if ( nKnown > 0 )
-                pX[i] = SumX / nKnown, pY[i] = SumY / nKnown;
-        }
-    }
-    for ( i = 0; i < nObjs; i++ )
-        if ( pX[i] < 0.0f )
-            pX[i] = pY[i] = 0.0f;
-}
-
-
-/**Function*************************************************************
-
   Synopsis    [&phys_map command]
 
-  Description [Performs technology mapping like "&nf" but with the
-               placement available from a previous &phys_bind/&phys_place
-               iteration.  The physical spread of the leaves of each cut
-               is added to its area flow and delay, so the cut ranking
-               favors cuts whose fanins are placed close to each other.
-               The resulting network is automatically bound.]
+  Description [Technology mapping with the cut ranking of "&nf" driven by
+               the placement and the timing analysis.  The command is
+               meant to be run after the unmapped AIG has been bound to
+               virtual cells, placed and timed:
+                   &phys_start; &phys_bind; &phys_place; &phys_sta;
+                   &phys_map; &phys_end
+               The mapper is "&nf" with one difference: cuts and matches
+               are compared lexicographically by
+                   critical-path timing, area, congestion, routability,
+               without a weighted cost.  The timing key is the predicted
+               arrival through the cut (STA arrival of its leaves plus the
+               Elmore wire delay from &phys_sta and the gate delay) measured
+               against the required time of the node, so it dominates on the
+               critical path and yields to area where there is slack.  The
+               area is the true area flow, the congestion is the routing
+               overflow demand of the cut wires from the RUDY map of
+               &phys_place, and the routability is the worst local
+               supply/demand ratio touched by the cut.  The physical keys
+               only steer the comparison; the area and arrival propagated
+               to the fanouts stay true, so the mapper does not build up a
+               fictitious cost over the levels of logic.
+               With "-l" the command is exactly "&nf" (no physical data,
+               no placement needed).]
 
   SideEffects []
 
@@ -1082,15 +1301,15 @@ int Abc_CommandPhysMap( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
     extern void Nf_ManSetDefaultPars( Jf_Par_t * pPars );
     extern Gia_Man_t * Nf_ManPerformMapping( Gia_Man_t * pGia, Jf_Par_t * pPars );
-    Phys_Man_t * pMan;
+    Phys_Man_t * pMan = (Phys_Man_t *)pAbc->pPhysMan;
     Jf_Par_t Pars, * pPars = &Pars;
-    Gia_Man_t * pNew;
-    float * pX = NULL, * pY = NULL;
-    float FlowW = 0.0f, DelayW = 0.05f;
-    int c, fVerbose = 0, nObjs;
+    Jf_Phys_t Phys;
+    Gia_Man_t * pNew, * pGia;
+    int c, fVerbose = 0, nObjs, nRelax = -1;
+    int fLegacy = 0, fRootOnly = 0, fCong = 1;
     Nf_ManSetDefaultPars( pPars );
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "K:C:F:E:D:x:y:vwh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "K:C:F:E:D:R:lsdvh" )) != EOF )
     {
         switch ( c )
         {
@@ -1129,23 +1348,23 @@ int Abc_CommandPhysMap( Abc_Frame_t * pAbc, int argc, char ** argv )
                 goto usage;
             }
             break;
-        case 'x':
+        case 'R':
             if ( globalUtilOptarg == NULL ) goto usage;
-            FlowW = (float)atof( globalUtilOptarg );
-            if ( FlowW < 0.0f )
+            nRelax = atoi( globalUtilOptarg );
+            if ( nRelax < 0 || nRelax > 100 )
             {
-                Abc_Print( -1, "The area-flow weight should be non-negative.\n" );
+                Abc_Print( -1, "The delay relaxation %d%% is not in [0, 100].\n", nRelax );
                 goto usage;
             }
             break;
-        case 'y':
-            if ( globalUtilOptarg == NULL ) goto usage;
-            DelayW = (float)atof( globalUtilOptarg );
-            if ( DelayW < 0.0f )
-            {
-                Abc_Print( -1, "The delay weight should be non-negative.\n" );
-                goto usage;
-            }
+        case 'l':
+            fLegacy = 1;
+            break;
+        case 's':
+            fRootOnly = 1;
+            break;
+        case 'd':
+            fCong = 0;
             break;
         case 'v':
             fVerbose ^= 1;
@@ -1161,11 +1380,6 @@ int Abc_CommandPhysMap( Abc_Frame_t * pAbc, int argc, char ** argv )
     }
     if ( argc != globalUtilOptind )
         goto usage;
-    if ( pAbc->pPhysMan == NULL )
-    {
-        Abc_Print( -1, "There is no physical-synthesis session. Run \"&phys_start\" first.\n" );
-        return 1;
-    }
     if ( pAbc->pGia == NULL )
     {
         Abc_Print( -1, "There is no Gia network. Read one with \"&read\" first.\n" );
@@ -1176,17 +1390,30 @@ int Abc_CommandPhysMap( Abc_Frame_t * pAbc, int argc, char ** argv )
         Abc_Print( -1, "The genlib library is not installed. Run \"&phys_start\" first.\n" );
         return 1;
     }
-    pMan = (Phys_Man_t *)pAbc->pPhysMan;
-    if ( !pMan->fPlaced )
+    if ( !fLegacy && pMan == NULL )
     {
-        Abc_Print( -1, "The design is not placed. Run \"&phys_bind\" and \"&phys_place\" first.\n" );
+        Abc_Print( -1, "There is no physical-synthesis session. Run \"&phys_start\" first,\n" );
+        Abc_Print( -1, "or use \"&phys_map -l\" for the legacy &nf mapping.\n" );
         return 1;
     }
     nObjs = Gia_ManObjNum( pAbc->pGia );
-    if ( 2 * nObjs > Vec_IntSize(pMan->vObjCellLit) )
+    if ( !fLegacy )
     {
-        Abc_Print( -1, "The session data does not match the current Gia network. Run \"&phys_bind\" first.\n" );
-        return 1;
+        if ( !pMan->fPlaced )
+        {
+            Abc_Print( -1, "The design is not placed. Run \"&phys_bind\" and \"&phys_place\" first,\n" );
+            Abc_Print( -1, "or use \"&phys_map -l\" for the legacy &nf mapping.\n" );
+            return 1;
+        }
+        if ( 2 * nObjs > Vec_IntSize(pMan->vObjCellLit) )
+        {
+            Abc_Print( -1, "The session data does not match the current Gia network. Run \"&phys_bind\" first.\n" );
+            return 1;
+        }
+        if ( !pMan->fTimed && fVerbose )
+            Abc_Print( 1, "Warning: there is no timing data, so the timing key falls back to\n"
+                          "the arrival of the mapper, and the required times cannot\n"
+                          "separate the candidates of the area track.\n" );
     }
     if ( pPars->nLutSize < 2 || pPars->nLutSize > pPars->nLutSizeMax )
     {
@@ -1203,55 +1430,82 @@ int Abc_CommandPhysMap( Abc_Frame_t * pAbc, int argc, char ** argv )
         Abc_Print( -1, "The Gia network has no objects to map.\n" );
         return 1;
     }
-    pX = ABC_ALLOC( float, nObjs );
-    pY = ABC_ALLOC( float, nObjs );
-    Abc_PhysMapCoords( pMan, pAbc->pGia, pX, pY );
+    if ( fLegacy )
+    {
+        pPars->pPhys = NULL;
+        pPars->fAllGates = 0;
+        pPars->nRelaxRatio = 0;  /* "-l" is bit-for-bit "&nf": no relaxation */
+    }
+    else
+    {
+        if ( !Phys_MapBuildPhys( pMan, pAbc->pGia, fCong, &Phys ) )
+        {
+            Abc_Print( -1, "The physical data of the session is not available.\n" );
+            return 1;
+        }
+        pPars->pPhys     = &Phys;
+        pPars->fAllGates = !fRootOnly;  /* keep the drive strengths for physical mapping */
+        pPars->fPinFilter = pPars->fAllGates ? 1 : 0;  /* prune dominated drives */
+        pPars->fCoarsen  = 0;  /* coarsening renumbers the objects */
+        /* With all gates, the delay-optimal mapping uses the fastest drive
+           everywhere and the area recovery cannot undo it without a delay
+           bound of its own.  "-R" relaxes that bound so the recovery has
+           room; zero keeps the plain "&nf" behaviour. */
+        pPars->nRelaxRatio = nRelax < 0 ? 0 : nRelax;
+    }
+    pPars->fVerbose = fVerbose;
     if ( fVerbose )
     {
-        float xMin = pX[1], xMax = pX[1], yMin = pY[1], yMax = pY[1];
-        int k;
-        for ( k = 2; k < nObjs; k++ )
-        {
-            xMin = Abc_MinFloat( xMin, pX[k] );  xMax = Abc_MaxFloat( xMax, pX[k] );
-            yMin = Abc_MinFloat( yMin, pY[k] );  yMax = Abc_MaxFloat( yMax, pY[k] );
-        }
-        Abc_Print( 1, "Physical coordinates: x [%.2f, %.2f], y [%.2f, %.2f] um.\n",
-                   xMin, xMax, yMin, yMax );
+        if ( fLegacy )
+            Abc_Print( 1, "Legacy mapping: %d objects (same as &nf).\n", nObjs );
+        else
+            Abc_Print( 1, "Physical mapping: %d objects, ranking timing > area > congestion > routability, delay relaxation %d%%, congestion %s.\n",
+                       nObjs, pPars->nRelaxRatio, fCong ? "on" : "off" );
     }
-    pPars->pPhysX     = pX;
-    pPars->pPhysY     = pY;
-    pPars->PhysFlowW  = FlowW;
-    pPars->PhysDelayW = DelayW;
-    pPars->fCoarsen   = 0;   /* coarsening renumbers the objects */
-    pPars->fVerbose   = fVerbose;
-    if ( fVerbose )
-        Abc_Print( 1, "Physical mapping: %d objects, flow weight %.3f, delay weight %.3f.\n",
-                   nObjs, FlowW, DelayW );
-    pNew = Nf_ManPerformMapping( pAbc->pGia, pPars );
-    ABC_FREE( pX );
-    ABC_FREE( pY );
+    pGia = pAbc->pGia;
+    pNew = Nf_ManPerformMapping( pGia, pPars );
+    if ( !fLegacy )
+        Phys_MapFreePhys( &Phys );
     if ( pNew == NULL )
     {
         Abc_Print( -1, "Physical mapping has failed.\n" );
         return 1;
     }
+    /* With timing boxes the mapper renumbers the network before mapping, so
+       the per-object placement and timing data, which is indexed by the
+       original ids, does not describe the mapped objects. */
+    if ( !fLegacy && pNew != pGia )
+        Abc_Print( 0, "Mapping: the network was renumbered for timing boxes, so the placement "
+                      "and timing data may not match the mapped objects.\n" );
     Abc_FrameUpdateGia( pAbc, pNew );
     /* the mapping changed, so the old binding/placement/timing are gone */
-    return Abc_PhysBind( pAbc, fVerbose );
+    if ( pMan == NULL )
+    {
+        /* "-l" without a session is just "&nf": there is no physical
+           binding to refresh, and Abc_PhysBind needs a session */
+        if ( fVerbose )
+            Abc_Print( 1, "No physical-synthesis session; the mapped network is left as is.\n" );
+        return 0;
+    }
+    return Abc_PhysBind( pAbc, NULL, fVerbose );
 
 usage:
-    Abc_Print( -2, "usage: &phys_map [-KCFEDxy num] [-vwh]\n" );
-    Abc_Print( -2, "\t          physical-aware technology mapping (cf. \"&nf\")\n" );
-    Abc_Print( -2, "\t          requires a placement from a previous iteration\n" );
+    Abc_Print( -2, "usage: &phys_map [-K num] [-C num] [-F num] [-E num] [-D num] [-R num]\n" );
+    Abc_Print( -2, "                [-l] [-s] [-d] [-vwh]\n" );
+    Abc_Print( -2, "\t          physical-aware technology mapping (enhanced \"&nf\")\n" );
+    Abc_Print( -2, "\t          maps the placed AIG; see &phys_bind/&phys_place/&phys_sta\n" );
+    Abc_Print( -2, "\t          the cuts are ranked lexicographically by critical-path timing,\n" );
+    Abc_Print( -2, "\t          area, congestion and routability, without any cost weights\n" );
     Abc_Print( -2, "\t-K num  : LUT size for the mapping (2 <= K <= %d) [default = %d]\n", pPars->nLutSizeMax, pPars->nLutSize );
     Abc_Print( -2, "\t-C num  : the max number of priority cuts (1 <= C <= %d) [default = %d]\n", pPars->nCutNumMax, pPars->nCutNum );
     Abc_Print( -2, "\t-F num  : the number of area flow rounds [default = %d]\n", pPars->nRounds );
     Abc_Print( -2, "\t-E num  : the area/edge tradeoff parameter (0 <= num <= 100) [default = %d]\n", pPars->nAreaTuner );
     Abc_Print( -2, "\t-D num  : sets the delay constraint for the mapping [default = best possible]\n" );
-    Abc_Print( -2, "\t-x num  : cost of the cut bounding box in area flow, in gate areas\n" );
-    Abc_Print( -2, "\t          per um; 0 disables the area term [default = %.2f]\n", 0.00 );
-    Abc_Print( -2, "\t-y num  : cost of the cut bounding box in delay, in ps per um\n" );
-    Abc_Print( -2, "\t          [default = %.2f]\n", 0.05 );
+    Abc_Print( -2, "\t-R num  : relax the delay bound of the mapping by num percent, which\n" );
+    Abc_Print( -2, "\t          gives the area recovery room to undo the fastest drives [default = %d]\n", 0 );
+    Abc_Print( -2, "\t-l      : use the legacy &nf algorithm (no physical data)\n" );
+    Abc_Print( -2, "\t-s      : use only the smallest root gate of each function\n" );
+    Abc_Print( -2, "\t-d      : disable the congestion and routability keys\n" );
     Abc_Print( -2, "\t-v      : toggles verbose output [default = no]\n" );
     Abc_Print( -2, "\t-w      : toggles very verbose output [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );

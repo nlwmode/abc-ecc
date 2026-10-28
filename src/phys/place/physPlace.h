@@ -38,11 +38,13 @@ typedef struct Phys_PlacePars_t_
     int   nIterCG;      /* conjugate-gradient iterations           */
     int   nIterNest;    /* nonlinear placement iterations          */
     float StopOverflow; /* density overflow at which to stop       */
+    int   nCongBins;    /* RUDY bins along the longer core side    */
     int   fVerbose;
 } Phys_PlacePars_t;
 
 extern void Phys_PlaceSetDefault( Phys_PlacePars_t * p );
 extern void Phys_PlaceCellSizeObj( Phys_Man_t * p, int iObj, int * pw, int * ph );
+extern void Phys_PlaceCellSizeCell( Phys_Man_t * p, Phys_LibCell_t * pCell, int * pw, int * ph );
 extern int  Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars );
 extern void Phys_PlacePrint( Phys_Man_t * p );
 

@@ -51,7 +51,7 @@ MODULES := \
 	src/proof/cec src/proof/acec src/proof/dch src/proof/fraig src/proof/fra src/proof/ssw \
 	src/aig/aig src/aig/saig src/aig/gia src/aig/ioa src/aig/ivy src/aig/hop \
 	src/aig/miniaig \
-	src/phys/lib src/phys/place src/phys/sta
+	src/phys/lib src/phys/place src/phys/sta src/phys/map
 
 all: $(PROG)
 default: $(PROG)

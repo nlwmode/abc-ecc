@@ -1157,8 +1157,17 @@ Abc_Ntk_t * Abc_NtkFromCellMappedGia( Gia_Man_t * p, int fUseBuffs )
     Vec_Int_t * vCopyLits;
     Abc_Obj_t * pObjNew, * pObjNewLi, * pObjNewLo;
     Gia_Obj_t * pObj, * pObjLi, * pObjLo;
-    int i, k, iLit, iFanLit, nCells, fNeedConst[2] = {0}; 
-    Mio_Cell2_t * pCells = Mio_CollectRootsNewDefault2( 6, &nCells, 0 );
+    int i, k, iLit, iFanLit, nCells, fNeedConst[2] = {0};
+    Mio_Cell2_t * pCells = NULL;
+    Vec_Mem_t * vTtMem = NULL;
+    Vec_Wec_t * vTt2Match = NULL;
+    /* Cell ids index the match table that was used by the mapper.  It is
+       usually the root-gate table, but physical mapping can keep all the
+       drive strengths, in which case the same all-gates table has to be
+       rebuilt here before the ids are dereferenced. */
+    Mio_LibraryMatchesFetch( (Mio_Library_t *)Abc_FrameReadLibGen(), &vTtMem, &vTt2Match,
+                             &pCells, &nCells, p->CellMatchPars[0], p->CellMatchPars[1],
+                             p->CellMatchPars[2], p->CellMatchPars[3] );
     assert( Gia_ManHasCellMapping(p) );
     // start network
     pNtkNew = Abc_NtkAlloc( ABC_NTK_LOGIC, ABC_FUNC_MAP, 1 );
@@ -1281,7 +1290,7 @@ Abc_Ntk_t * Abc_NtkFromCellMappedGia( Gia_Man_t * p, int fUseBuffs )
     assert( Gia_ManPoNum(p) == Abc_NtkPoNum(pNtkNew) );
     assert( Gia_ManRegNum(p) == Abc_NtkLatchNum(pNtkNew) );
     Vec_IntFree( vCopyLits );
-    ABC_FREE( pCells );
+    /* pCells is owned and cached by the Mio library */
 
     // check the resulting AIG
     if ( !Abc_NtkCheck( pNtkNew ) )

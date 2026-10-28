@@ -53,8 +53,11 @@ typedef struct Nf_Cut_t_ Nf_Cut_t;
 struct Nf_Cut_t_
 {
     word            Sign;           // signature
-    int             Delay;          // delay
-    float           Flow;           // flow
+    int             Delay;          // delay (true gate arrival, Scl units)
+    float           Flow;           // flow (true area flow)
+    float           PhysT;          // timing key: required-time violation (ps)
+    float           PhysC;          // congestion key: weighted excess demand
+    float           PhysR;          // routability key: worst local deficit
     unsigned        iFunc   : 26;   // function (NF_NO_FUNC)
     unsigned        Useless :  1;   // function
     unsigned        nLeaves :  5;   // leaf number (NF_NO_LEAF)
@@ -75,8 +78,12 @@ struct Nf_Mat_t_
     unsigned        fCompl  :  1;   // complemented
     unsigned        fBest   :  1;   // best cut
     Nf_Cfg_t        Cfg;            // input literals
-    int             D;              // delay
-    float           F;              // area 
+    int             D;              // delay (true arrival)
+    float           F;              // area (true area)
+    float           PhysA;          // timing key: predicted arrival (ps)
+    float           PhysT;          // timing key: required-time violation (ps)
+    float           PhysC;          // congestion key: weighted excess demand
+    float           PhysR;          // routability key: worst local deficit
 };
 typedef struct Nf_Obj_t_ Nf_Obj_t; 
 struct Nf_Obj_t_
@@ -208,10 +215,10 @@ void Nf_StoCreateGateAdd( Vec_Mem_t * vTtMem, Vec_Wec_t * vTt2Match, Mio_Cell2_t
     // check other profiles
     if ( fPinFilter )
     {
-        // get profile array
-        assert( Vec_WecSize(vTt2Match) == Vec_WecSize(vProfs) );
+        // get profile array (the level is added together with the match one)
         if ( iFunc == Vec_WecSize(vProfs) )
             Vec_WecPushLevel( vProfs );
+        assert( Vec_WecSize(vTt2Match) == Vec_WecSize(vProfs) );
         vArrayProfs = Vec_WecEntry( vProfs, iFunc );
         assert( Vec_IntSize(vArray) == 2 * Vec_IntSize(vArrayProfs) );
         // skip dominated matches
@@ -285,7 +292,7 @@ void Nf_StoCreateGateMaches( Vec_Mem_t * vTtMem, Vec_Wec_t * vTt2Match, Mio_Cell
     }
     assert( tTemp1 == tCur );
 }
-Mio_Cell2_t * Nf_StoDeriveMatches( Vec_Mem_t * vTtMem, Vec_Wec_t * vTt2Match, int * pnCells, int fPinFilter, int fPinPerm, int fPinQuick )
+Mio_Cell2_t * Nf_StoDeriveMatches( Vec_Mem_t * vTtMem, Vec_Wec_t * vTt2Match, int * pnCells, int fPinFilter, int fPinPerm, int fPinQuick, int fAllGates )
 {
     int fVerbose = 0;
     //abctime clk = Abc_Clock();
@@ -301,7 +308,8 @@ Mio_Cell2_t * Nf_StoDeriveMatches( Vec_Mem_t * vTtMem, Vec_Wec_t * vTt2Match, in
         pPerm[i] = Extra_PermSchedule( i );
     for ( i = 1; i <= 6; i++ )
         nPerms[i] = Extra_Factorial( i );
-    pCells = Mio_CollectRootsNewDefault2( 6, pnCells, fVerbose );
+    pCells = fAllGates ? Mio_CollectAllNewDefault2( 6, pnCells, fVerbose )
+                       : Mio_CollectRootsNewDefault2( 6, pnCells, fVerbose );
     if ( pCells != NULL )
     for ( i = 2; i < *pnCells; i++ )
         Nf_StoCreateGateMaches( vTtMem, vTt2Match, pCells+i, pComp, pPerm, nPerms, vProfs, vStore, fPinFilter, fPinPerm, fPinQuick );
@@ -380,6 +388,9 @@ Nf_Man_t * Nf_StoCreate( Gia_Man_t * pGia, Jf_Par_t * pPars )
     assert( pPars->nLutSize > 1 && pPars->nLutSize <= NF_LEAF_MAX );
     ABC_FREE( pGia->pRefs );
     Vec_IntFreeP( &pGia->vCellMapping );
+    Vec_PtrFreeP( &pGia->vCellNames );
+    pGia->CellMatchPars[0] = pGia->CellMatchPars[1] = 0;
+    pGia->CellMatchPars[2] = pGia->CellMatchPars[3] = 0;
     if ( Gia_ManHasChoices(pGia) )
         Gia_ManSetPhase(pGia);
     // create
@@ -409,12 +420,25 @@ Nf_Man_t * Nf_StoCreate( Gia_Man_t * pGia, Jf_Par_t * pPars )
     }
     Vec_IntFree(vFlowRefs);
     // matching
-    Mio_LibraryMatchesFetch( (Mio_Library_t *)Abc_FrameReadLibGen(), &p->vTtMem, &p->vTt2Match, &p->pCells, &p->nCells, p->pPars->fPinFilter, p->pPars->fPinPerm, p->pPars->fPinQuick );
+    Mio_LibraryMatchesFetch( (Mio_Library_t *)Abc_FrameReadLibGen(), &p->vTtMem, &p->vTt2Match, &p->pCells, &p->nCells, p->pPars->fPinFilter, p->pPars->fPinPerm, p->pPars->fPinQuick, p->pPars->fAllGates );
     if ( p->pCells == NULL )
         return NULL;
     p->InvDelayI = p->pCells[3].iDelays[0];
     p->InvAreaW  = p->pCells[3].AreaW;
     p->InvAreaF  = p->pCells[3].AreaF;
+    pGia->CellMatchPars[0] = pPars->fPinFilter;
+    pGia->CellMatchPars[1] = pPars->fPinPerm;
+    pGia->CellMatchPars[2] = pPars->fPinQuick;
+    pGia->CellMatchPars[3] = pPars->fAllGates;
+    if ( pPars->fAllGates )
+    {
+        /* the cell ids of the mapping index this all-gates table, so the
+           names have to travel with the network for &phys_bind */
+        Vec_Ptr_t * vNames = Vec_PtrAlloc( p->nCells );
+        for ( i = 0; i < p->nCells; i++ )
+            Vec_PtrPush( vNames, p->pCells[i].pName );
+        pGia->vCellNames = vNames;
+    }
     Nf_ObjMatchD(p, 0, 0)->Gate = 0;
     Nf_ObjMatchD(p, 0, 1)->Gate = 1;
     // prepare cuts
@@ -522,6 +546,9 @@ static inline int Nf_CutCreateUnit( Nf_Cut_t * p, int i )
 {
     p->Delay      = 0;
     p->Flow       = 0;
+    p->PhysT      = 0;
+    p->PhysC      = 0.0f;
+    p->PhysR      = 0.0f;
     p->iFunc      = 2;
     p->nLeaves    = 1;
     p->pLeaves[0] = i;
@@ -553,6 +580,9 @@ static inline int Nf_ManPrepareCuts( Nf_Cut_t * pCuts, Nf_Man_t * p, int iObj, i
         {
             pMfCut->Delay   = 0;
             pMfCut->Flow    = 0;
+            pMfCut->PhysT   = 0;
+            pMfCut->PhysC   = 0.0f;
+            pMfCut->PhysR   = 0.0f;
             pMfCut->iFunc   = Nf_CutFunc( pCut );
             pMfCut->nLeaves = Nf_CutSize( pCut );
             pMfCut->Sign    = Nf_CutGetSign( pCut+1, Nf_CutSize(pCut) );
@@ -814,10 +844,21 @@ static inline int Nf_CutCompareArea( Nf_Cut_t * pCut0, Nf_Cut_t * pCut1 )
 {
     if ( pCut0->Useless < pCut1->Useless )  return -1;
     if ( pCut0->Useless > pCut1->Useless )  return  1;
-    if ( pCut0->Flow    < pCut1->Flow - NF_EPSILON )  return -1;
-    if ( pCut0->Flow    > pCut1->Flow + NF_EPSILON )  return  1;
-    if ( pCut0->Delay   < pCut1->Delay   )  return -1;
-    if ( pCut0->Delay   > pCut1->Delay   )  return  1;
+    /* 1. critical-path timing: the required-time violation */
+    if ( pCut0->PhysT < pCut1->PhysT )  return -1;
+    if ( pCut0->PhysT > pCut1->PhysT )  return  1;
+    /* 2. area: the true area flow */
+    if ( pCut0->Flow < pCut1->Flow - NF_EPSILON )  return -1;
+    if ( pCut0->Flow > pCut1->Flow + NF_EPSILON )  return  1;
+    /* 3. congestion: the weighted routing overflow */
+    if ( pCut0->PhysC < pCut1->PhysC )  return -1;
+    if ( pCut0->PhysC > pCut1->PhysC )  return  1;
+    /* 4. routability: the worst local deficit */
+    if ( pCut0->PhysR < pCut1->PhysR )  return -1;
+    if ( pCut0->PhysR > pCut1->PhysR )  return  1;
+    /* the legacy tie breakers of "&nf" */
+    if ( pCut0->Delay < pCut1->Delay )  return -1;
+    if ( pCut0->Delay > pCut1->Delay )  return  1;
     if ( pCut0->nLeaves < pCut1->nLeaves )  return -1;
     if ( pCut0->nLeaves > pCut1->nLeaves )  return  1;
     return 0;
@@ -846,48 +887,256 @@ static inline int Nf_CutArea( Nf_Man_t * p, int nLeaves )
         return 0;
     return nLeaves + p->pPars->nAreaTuner;
 }
-/* Physical spread of a set of cut leaves, used when the caller supplies
-   per-object coordinates through Jf_Par_t (see &phys_map).  The arrays are
-   indexed by object id and must cover the mapped network.  The spread is
-   the half-perimeter of the bounding box of the leaves, in um. */
-static inline float Nf_CutPhysSpreadLeaves( Nf_Man_t * p, int * pLeaves, int nLeaves )
+/* Physical ranking keys.  The data comes from the placement (&phys_place)
+   and the timing analysis (&phys_sta) through Jf_Phys_t.  Cuts and matches
+   are compared lexicographically in the order
+       critical-path timing, area, congestion, routability,
+   never through a weighted cost.
+   The timing key of a cut or a match is the arrival it predicts at the
+   node, in ps: the arrival the mapper propagates through the leaf plus the
+   Elmore wire delay of the leaf-to-node wire, which the placement and the
+   timing analysis give.  The arrival at a leaf is the one the mapper has
+   already computed for it, not the arrival of the unmapped AIG, because
+   only the mapper knows which cuts reach the leaf; the wire delay is what
+   the placement adds to it.  The delay track of the mapper minimizes the
+   arrival it propagates, which is the only quantity the required times of
+   the next round are built from, and uses the predicted arrival as the
+   first key among the candidates that reach that arrival: the placement
+   decides there, and the area, the congestion and the routability break
+   the remaining ties.  The area-oriented comparisons (the area track and
+   the area recovery) compare the violation max(0, arrival - required)
+   against the required time of the timing analysis, so timing decides on
+   the critical path, where the slack is zero, and yields to the area
+   wherever there is slack; in area recovery every candidate already meets
+   the required time, so the area decides first.  The congestion key is the
+   distance-weighted excess of the RUDY demand over the supply, and the
+   routability key is the worst local deficit 1 - min(1, supply/demand).
+   The keys steer only the comparison; the area and the arrival propagated
+   to the fanouts stay the true ones.  With pPhys == NULL every key is zero
+   and the mapper is bit-for-bit the legacy &nf. */
+static inline float Nf_PhysAbs( float x )
 {
-    float * pX = p->pPars->pPhysX;
-    float * pY = p->pPars->pPhysY;
-    float xMin, xMax, yMin, yMax, x, y;
+    return x < 0.0f ? -x : x;
+}
+static inline float Nf_CutPhysDist( Jf_Phys_t * pPh, int i0, int i1 )
+{
+    return Nf_PhysAbs( pPh->pX[i0] - pPh->pX[i1] ) +
+           Nf_PhysAbs( pPh->pY[i0] - pPh->pY[i1] );
+}
+static inline int Nf_CutPhysOk( Nf_Man_t * p, int iObj, int * pLeaves, int nLeaves )
+{
+    Jf_Phys_t * pPh = p->pPars->pPhys;
     int i;
-    if ( pX == NULL || pY == NULL || nLeaves < 2 )
-        return 0.0f;
-    xMin = xMax = pX[ pLeaves[0] ];
-    yMin = yMax = pY[ pLeaves[0] ];
-    for ( i = 1; i < nLeaves; i++ )
-    {
-        x = pX[ pLeaves[i] ];
-        y = pY[ pLeaves[i] ];
-        xMin = Abc_MinFloat( xMin, x );  xMax = Abc_MaxFloat( xMax, x );
-        yMin = Abc_MinFloat( yMin, y );  yMax = Abc_MaxFloat( yMax, y );
-    }
-    return (xMax - xMin) + (yMax - yMin);
-}
-static inline float Nf_CutPhysSpread( Nf_Man_t * p, Nf_Cut_t * pCut )
-{
-    return Nf_CutPhysSpreadLeaves( p, pCut->pLeaves, pCut->nLeaves );
-}
-/* The physical terms are added to the cut cost in the units of the cost
-   itself: the spread, in um, enters the area-flow as the area of as many
-   extra gates, and the delay as ps of wire delay per um, converted to the
-   fixed-point delay units (1 ps = 1000). */
-static inline float Nf_CutPhysFlow( Nf_Man_t * p, int * pLeaves, int nLeaves )
-{
-    return p->pPars->pPhysX ? p->pPars->PhysFlowW * Nf_CutPhysSpreadLeaves(p, pLeaves, nLeaves) : 0.0f;
-}
-static inline int Nf_CutPhysDelay( Nf_Man_t * p, int * pLeaves, int nLeaves )
-{
-    if ( p->pPars->pPhysX == NULL )
+    if ( pPh == NULL || !pPh->fEnable || pPh->pX == NULL || pPh->pY == NULL )
         return 0;
-    return (int)( 1000.0f * p->pPars->PhysDelayW * Nf_CutPhysSpreadLeaves(p, pLeaves, nLeaves) + 0.5f );
+    if ( iObj < 0 || iObj >= pPh->nObjs )
+        return 0;
+    for ( i = 0; i < nLeaves; i++ )
+        if ( pLeaves[i] < 0 || pLeaves[i] >= pPh->nObjs )
+            return 0;
+    return 1;
 }
-static inline void Nf_CutParams( Nf_Man_t * p, Nf_Cut_t * pCut, float FlowRefs )
+/* Excess routing demand of one object, in demand/supply units. */
+static inline float Nf_PhysCongObj( Jf_Phys_t * pPh, int i )
+{
+    float Cong;
+    if ( !pPh->fCong || pPh->pCong == NULL )
+        return 0.0f;
+    Cong = pPh->pCong[i];
+    return Cong > 1.0f ? Cong - 1.0f : 0.0f;
+}
+/* Local routability deficit of one object, in [0,1). */
+static inline float Nf_PhysRoutObj( Jf_Phys_t * pPh, int i )
+{
+    float Rout;
+    if ( !pPh->fCong || pPh->pRout == NULL )
+        return 0.0f;
+    Rout = pPh->pRout[i];
+    if ( !(Rout >= 0.0f) )
+        return 0.0f;
+    return Rout < 1.0f ? 1.0f - Rout : 0.0f;
+}
+static inline float Nf_CutPhysWireDelay( Jf_Phys_t * pPh, int iObj, int iLeaf )
+{
+    float Cap, Dist;
+    if ( pPh->RcR <= 0.0f )
+        return 0.0f;
+    Dist = Nf_CutPhysDist( pPh, iLeaf, iObj );
+    Cap  = pPh->pNetCap ? pPh->pNetCap[iObj] : 0.0f;
+    if ( !(Cap >= 0.0f) )
+        Cap = 0.0f;
+    return pPh->RcR * Dist * ( Cap + 0.5f * pPh->RcC * Dist );
+}
+/* Violation of the required time of the node by the predicted arrival.
+   The times are in ps, the unit of the placement timing analysis, not in
+   the Scl fixed point of the mapper, which saturates on a design whose
+   paths are longer than SCL_INFINITY. */
+static inline float Nf_PhysViol( Jf_Phys_t * pPh, int iObj, float Arr )
+{
+    if ( pPh == NULL || pPh->pReq == NULL || iObj < 0 || iObj >= pPh->nObjs )
+        return 0.0f;
+    if ( !(pPh->pReq[iObj] < 1e29f) )
+        return 0.0f;
+    return Arr > pPh->pReq[iObj] ? Arr - pPh->pReq[iObj] : 0.0f;
+}
+/* Predicted arrival at the node of an arrival that reaches one leaf, in
+   ps: the arrival converted from the fixed point of the mapper plus the
+   Elmore wire delay from the leaf to the node, which comes from the
+   placement (coordinates, wire RC and the capacitance of the net). */
+static inline float Nf_PhysPinArr( Nf_Man_t * p, int iObj, int iLeaf, int ArrScl )
+{
+    Jf_Phys_t * pPh = p->pPars->pPhys;
+    float Arr = Scl_Int2Flt( ArrScl );
+    if ( pPh == NULL || !pPh->fEnable || pPh->pX == NULL || pPh->pY == NULL )
+        return Arr;
+    if ( iObj < 0 || iObj >= pPh->nObjs || iLeaf < 0 || iLeaf >= pPh->nObjs )
+        return Arr;
+    return Arr + Nf_CutPhysWireDelay( pPh, iObj, iLeaf );
+}
+/* Predicted arrival of the cut, in ps: the largest predicted arrival of
+   its leaves through the wires to the node.  The gate delay is missing,
+   because the gate is not known before the match, so this is the lower
+   bound used to compare and prune cuts. */
+static inline float Nf_CutPhysArr( Nf_Man_t * p, int iObj, Nf_Cut_t * pCut )
+{
+    int i, nLeaves = pCut->nLeaves;
+    float Arr = -1e30f;
+    if ( !Nf_CutPhysOk( p, iObj, pCut->pLeaves, nLeaves ) )
+        return Scl_Int2Flt( pCut->Delay );
+    for ( i = 0; i < nLeaves; i++ )
+        Arr = Abc_MaxFloat( Arr, Nf_PhysPinArr( p, iObj, pCut->pLeaves[i],
+                Nf_ObjCutDelay( p, pCut->pLeaves[i] ) + (nLeaves > 1) ) );
+    return Arr < -1e29f ? Scl_Int2Flt( pCut->Delay ) : Arr;
+}
+/* Congestion key of the cut: the excess demand of the RUDY map weighted
+   by the length of the wires from the leaves to the node. */
+static inline float Nf_CutPhysCong( Nf_Man_t * p, int iObj, int * pLeaves, int nLeaves )
+{
+    Jf_Phys_t * pPh = p->pPars->pPhys;
+    float WL = 0.0f, Cong;
+    int i;
+    if ( !Nf_CutPhysOk(p, iObj, pLeaves, nLeaves) || !pPh->fCong )
+        return 0.0f;
+    for ( i = 0; i < nLeaves; i++ )
+        WL += Nf_CutPhysDist( pPh, pLeaves[i], iObj );
+    Cong = WL * Nf_PhysCongObj( pPh, iObj );
+    for ( i = 0; i < nLeaves; i++ )
+        Cong += Nf_CutPhysDist( pPh, pLeaves[i], iObj ) * Nf_PhysCongObj( pPh, pLeaves[i] );
+    return Cong;
+}
+/* Routability key of the cut: the worst local deficit at the node or a leaf. */
+static inline float Nf_CutPhysRout( Nf_Man_t * p, int iObj, int * pLeaves, int nLeaves )
+{
+    Jf_Phys_t * pPh = p->pPars->pPhys;
+    float Rout;
+    int i;
+    if ( !Nf_CutPhysOk(p, iObj, pLeaves, nLeaves) || !pPh->fCong )
+        return 0.0f;
+    Rout = Nf_PhysRoutObj( pPh, iObj );
+    for ( i = 0; i < nLeaves; i++ )
+        Rout = Abc_MaxFloat( Rout, Nf_PhysRoutObj( pPh, pLeaves[i] ) );
+    return Rout;
+}
+/* Lexicographic comparison of the ranking keys.  Returns -1 when the first
+   tuple is better, 1 when the second is better, and 0 when they are equal.
+   Timing comes first, so a cut or match that meets the required time beats
+   one that does not, whatever the other keys say; among the ones that meet
+   it, the area decides, then the congestion, then the routability. */
+static inline int Nf_PhysCompare( float T0, float F0, float C0, float R0, float T1, float F1, float C1, float R1 )
+{
+    if ( T0 < T1 )  return -1;
+    if ( T0 > T1 )  return  1;
+    if ( F0 < F1 - NF_EPSILON )  return -1;
+    if ( F0 > F1 + NF_EPSILON )  return  1;
+    if ( C0 < C1 )  return -1;
+    if ( C0 > C1 )  return  1;
+    if ( R0 < R1 )  return -1;
+    if ( R0 > R1 )  return  1;
+    return 0;
+}
+/* Comparison of a candidate match with the stored one.  The delay track
+   ranks by the predicted arrival and the area track by its violation of
+   the required time, so timing dominates on the critical path in both. */
+static inline int Nf_MatCompareD( Nf_Mat_t * pM, float PhysA, float F, float PhysC, float PhysR )
+{
+    return Nf_PhysCompare( PhysA, F, PhysC, PhysR, pM->PhysA, pM->F, pM->PhysC, pM->PhysR );
+}
+static inline int Nf_MatCompareA( Nf_Mat_t * pM, float PhysT, float F, float PhysC, float PhysR )
+{
+    return Nf_PhysCompare( PhysT, F, PhysC, PhysR, pM->PhysT, pM->F, pM->PhysC, pM->PhysR );
+}
+/* A match or cut is usable when its true arrival still fits the Scl range.
+   The mapper saturates the arrival of a design whose critical path is
+   longer than SCL_INFINITY, and adding a gate delay to a value close to
+   the limit leaves it above the limit, so "at the limit or above" means
+   "no usable arrival".  Such a match is a fallback only: it never beats a
+   match that fits the range, whatever the ranking keys say. */
+static inline int Nf_MatFeasible( int D )
+{
+    return D < SCL_INFINITY;
+}
+/* The fixed point of the mapper is shorter than the longest path of a large
+   design, so in physical mode an arrival that leaves the range is kept at
+   the last value of the range instead of overflowing it.  The timing keys of
+   the ranking are in ps and are not affected. */
+static inline int Nf_PhysScl( int D, int fPhys )
+{
+    return fPhys && D > SCL_INFINITY - 1 ? SCL_INFINITY - 1 : D;
+}
+static inline int Nf_PhysAdd( int D, int Del, int fPhys )
+{
+    int Sum = D + Del;
+    return fPhys && Sum > SCL_INFINITY - 1 ? SCL_INFINITY - 1 : Sum;
+}
+/* Returns 1 if the delay-track match pM0 is worse than pM1 driven through
+   one more inverter.  With timing data the predicted arrivals decide,
+   otherwise the true arrivals do. */
+static inline int Nf_MatWorseD( Nf_Mat_t * pM0, Nf_Mat_t * pM1, int InvDelay, int fPhys )
+{
+    if ( !fPhys )
+    {
+        if ( pM0->D == SCL_INFINITY )
+            return pM1->D < SCL_INFINITY;
+        if ( pM1->D == SCL_INFINITY )
+            return 0;
+        return pM0->D > pM1->D + InvDelay;
+    }
+    // the inverted copy of pM1 has to fit the Scl range to be usable
+    if ( !Nf_MatFeasible( pM1->D ) || pM1->D + InvDelay >= SCL_INFINITY )
+        return 0;
+    if ( !Nf_MatFeasible( pM0->D ) )
+        return 1;
+    if ( pM0->D != pM1->D + InvDelay )
+        return pM0->D > pM1->D + InvDelay;
+    return pM0->PhysA > pM1->PhysA + Scl_Int2Flt(InvDelay);
+}
+/* Returns 1 when a candidate match with true arrival Delay, predicted
+   arrival PhysA, area F, congestion C and routability R beats the stored
+   delay-track match.  A candidate that leaves the Scl range only replaces
+   a stored match that leaves it too, and then by the true arrival. */
+static inline int Nf_MatBetterD( Nf_Mat_t * pM, int Delay, float PhysA, float F, float C, float R, int fPhys )
+{
+    if ( !fPhys )
+        return pM->D == SCL_INFINITY || pM->D > Delay;
+    if ( !Nf_MatFeasible( Delay ) )
+        return !Nf_MatFeasible( pM->D ) && (pM->D == SCL_INFINITY || pM->D > Delay);
+    if ( !Nf_MatFeasible( pM->D ) )
+        return 1;
+    if ( Delay != pM->D )
+        return pM->D > Delay;
+    return Nf_MatCompareD( pM, PhysA, F, C, R ) < 0;
+}
+/* The same for the area track, where the violation of the required time
+   and then the area decide. */
+static inline int Nf_MatBetterA( Nf_Mat_t * pM, int Delay, float PhysT, float F, float C, float R, int fPhys )
+{
+    if ( !fPhys )
+        return pM->D == SCL_INFINITY || pM->F > F + NF_EPSILON;
+    if ( Nf_MatFeasible( Delay ) )
+        return !Nf_MatFeasible( pM->D ) || Nf_MatCompareA( pM, PhysT, F, C, R ) < 0;
+    return !Nf_MatFeasible( pM->D ) && (pM->D == SCL_INFINITY || pM->F > F + NF_EPSILON);
+}
+static inline void Nf_CutParams( Nf_Man_t * p, Nf_Cut_t * pCut, float FlowRefs, int iObj )
 {
     int i, nLeaves = pCut->nLeaves;
     assert( nLeaves <= p->pPars->nLutSize );
@@ -900,8 +1149,9 @@ static inline void Nf_CutParams( Nf_Man_t * p, Nf_Cut_t * pCut, float FlowRefs )
     }
     pCut->Delay += (int)(nLeaves > 1);
     pCut->Flow = (pCut->Flow + Nf_CutArea(p, nLeaves)) / FlowRefs;
-    pCut->Flow  += Nf_CutPhysFlow( p, pCut->pLeaves, nLeaves );
-    pCut->Delay += Nf_CutPhysDelay( p, pCut->pLeaves, nLeaves );
+    pCut->PhysT = Nf_PhysViol( p->pPars->pPhys, iObj, Nf_CutPhysArr( p, iObj, pCut ) );
+    pCut->PhysC = Nf_CutPhysCong( p, iObj, pCut->pLeaves, nLeaves );
+    pCut->PhysR = Nf_CutPhysRout( p, iObj, pCut->pLeaves, nLeaves );
 }
 void Nf_ObjMergeOrder( Nf_Man_t * p, int iObj )
 {
@@ -932,7 +1182,7 @@ void Nf_ObjMergeOrder( Nf_Man_t * p, int iObj )
         {
             *pCutsR[nCutsR] = *pCut2;
             pCutsR[nCutsR]->iFunc = Abc_LitNotCond( pCutsR[nCutsR]->iFunc, fCompE );
-            Nf_CutParams( p, pCutsR[nCutsR], dFlowRefs );
+            Nf_CutParams( p, pCutsR[nCutsR], dFlowRefs, iObj );
             nCutsR = Nf_SetAddCut( pCutsR, nCutsR, nCutNum );
         }
     }
@@ -957,7 +1207,7 @@ void Nf_ObjMergeOrder( Nf_Man_t * p, int iObj )
             p->CutCount[2]++;
             if ( Nf_CutComputeTruthMux6(p, pCut0, pCut1, pCut2, fComp0, fComp1, fComp2, pCutsR[nCutsR]) )
                 pCutsR[nCutsR]->Sign = Nf_CutGetSign(pCutsR[nCutsR]->pLeaves, pCutsR[nCutsR]->nLeaves);
-            Nf_CutParams( p, pCutsR[nCutsR], dFlowRefs );
+            Nf_CutParams( p, pCutsR[nCutsR], dFlowRefs, iObj );
             nCutsR = Nf_SetAddCut( pCutsR, nCutsR, nCutNum );
         }
     }
@@ -978,7 +1228,7 @@ void Nf_ObjMergeOrder( Nf_Man_t * p, int iObj )
             p->CutCount[2]++;
             if ( Nf_CutComputeTruth6(p, pCut0, pCut1, fComp0, fComp1, pCutsR[nCutsR], fIsXor) )
                 pCutsR[nCutsR]->Sign = Nf_CutGetSign(pCutsR[nCutsR]->pLeaves, pCutsR[nCutsR]->nLeaves);
-            Nf_CutParams( p, pCutsR[nCutsR], dFlowRefs );
+            Nf_CutParams( p, pCutsR[nCutsR], dFlowRefs, iObj );
             nCutsR = Nf_SetAddCut( pCutsR, nCutsR, nCutNum );
         }
     }
@@ -1173,7 +1423,9 @@ void Nf_ManCutMatchOne( Nf_Man_t * p, int iObj, int * pCut, int * pCutSet )
     int fComplExt    = Abc_LitIsCompl(iFuncLit);
     Vec_Int_t * vArr = Vec_WecEntry( p->vTt2Match, Abc_Lit2Var(iFuncLit) );
     int i, k, c, Info, Offset, iFanin, fComplF;
-    int ArrivalD, ArrivalA;
+    int ArrivalD, ArrivalA, ArrSumD, ArrSumA;
+    int fPhys  = p->pPars->pPhys != NULL;
+    float PhysC, PhysR;
     Nf_Mat_t * pD, * pA;
     // assign fanins matches
     Nf_Obj_t * pBestF[NF_LEAF_MAX];
@@ -1185,11 +1437,15 @@ void Nf_ManCutMatchOne( Nf_Man_t * p, int iObj, int * pCut, int * pCutSet )
         int Const = (iFuncLit == 1);
         assert( iFuncLit == 0 || iFuncLit == 1 );
         for ( c = 0; c < 2; c++ )
-        { 
+        {
             pD = Nf_ObjMatchD( p, iObj, c );
             pA = Nf_ObjMatchA( p, iObj, c );
             pD->D = pA->D = 0;
             pD->F = pA->F = p->pCells[c ^ Const].AreaF;
+            pD->PhysA = pA->PhysA = 0.0f;
+            pD->PhysT = pA->PhysT = 0.0f;
+            pD->PhysC = pA->PhysC = 0.0f;
+            pD->PhysR = pA->PhysR = 0.0f;
             pD->CutH = pA->CutH = Nf_CutHandle(pCutSet, pCut);
             pD->Gate = pA->Gate = c ^ Const;
 //            pD->Conf = pA->Conf = 0;
@@ -1197,6 +1453,11 @@ void Nf_ManCutMatchOne( Nf_Man_t * p, int iObj, int * pCut, int * pCutSet )
         }
         return;
     }
+    /* The congestion and routability keys depend only on the cut, so they
+       are computed once; the arrival also depends on the gate, so it is
+       computed for every match. */
+    PhysC = Nf_CutPhysCong( p, iObj, pFans, nFans );
+    PhysR = Nf_CutPhysRout( p, iObj, pFans, nFans );
     // consider matches of this function
     Vec_IntForEachEntryDouble( vArr, Info, Offset, i )
     {
@@ -1204,17 +1465,22 @@ void Nf_ManCutMatchOne( Nf_Man_t * p, int iObj, int * pCut, int * pCutSet )
         Mio_Cell2_t*pC = Nf_ManCell( p, Info );
         int fCompl     = Cfg.fCompl ^ fComplExt;
         int Required   = Nf_ObjRequired( p, iObj, fCompl ), Delay = 0;
+        float PhysA    = -1e30f, PhysT = 0.0f;
         Nf_Mat_t * pD  = &pBest->M[fCompl][0];
         Nf_Mat_t * pA  = &pBest->M[fCompl][1];
         float AreaF    = pC->AreaF;
         assert( nFans == (int)pC->nFanins );
         Nf_CfgForEachVarCompl( Cfg, nFans, iFanin, fComplF, k )
         {
-            ArrivalD  = pBestF[iFanin]->M[fComplF][0].D;
-            ArrivalA  = pBestF[iFanin]->M[fComplF][1].D;
-            if ( ArrivalA + pC->iDelays[k] <= Required && Required != SCL_INFINITY )
+            ArrivalD  = Nf_PhysScl( pBestF[iFanin]->M[fComplF][0].D, fPhys );
+            ArrivalA  = Nf_PhysScl( pBestF[iFanin]->M[fComplF][1].D, fPhys );
+            ArrSumD   = Nf_PhysAdd( ArrivalD, pC->iDelays[k], fPhys );
+            ArrSumA   = Nf_PhysAdd( ArrivalA, pC->iDelays[k], fPhys );
+            if ( ArrSumA <= Required && Required != SCL_INFINITY )
             {
-                Delay = Abc_MaxInt( Delay, ArrivalA + pC->iDelays[k] );
+                Delay = Abc_MaxInt( Delay, ArrSumA );
+                if ( fPhys )
+                    PhysA = Abc_MaxFloat( PhysA, Nf_PhysPinArr( p, iObj, pFans[iFanin], ArrSumA ) );
                 if ( AreaF >= (float)1e32 || pBestF[iFanin]->M[fComplF][1].F >= (float)1e32 )
                     AreaF = (float)1e32;
                 else
@@ -1222,9 +1488,11 @@ void Nf_ManCutMatchOne( Nf_Man_t * p, int iObj, int * pCut, int * pCutSet )
             }
             else 
             {
-                if ( pD->D < SCL_INFINITY && pA->D < SCL_INFINITY && ArrivalD + pC->iDelays[k] > Required )
+                if ( pD->D < SCL_INFINITY && pA->D < SCL_INFINITY && ArrSumD > Required )
                     break;
-                Delay = Abc_MaxInt( Delay, ArrivalD + pC->iDelays[k] );
+                Delay = Abc_MaxInt( Delay, ArrSumD );
+                if ( fPhys )
+                    PhysA = Abc_MaxFloat( PhysA, Nf_PhysPinArr( p, iObj, pFans[iFanin], ArrSumD ) );
                 //AreaF += pBestF[iFanin]->M[fComplF][0].F;
                 if ( AreaF >= (float)1e32 || pBestF[iFanin]->M[fComplF][0].F >= (float)1e32 )
                     AreaF = (float)1e32;
@@ -1234,28 +1502,38 @@ void Nf_ManCutMatchOne( Nf_Man_t * p, int iObj, int * pCut, int * pCutSet )
         }
         if ( k < nFans )
             continue;
-        /* Physical-awareness: the leaves of this cut sit somewhere in the
-           placement, and a match that draws them together is cheaper both
-           in area flow and in wire delay.  The penalty depends only on the
-           cut, not on the gate, so it is added once before the matches of
-           the cut are compared. */
-        AreaF += Nf_CutPhysFlow( p, pFans, nFans );
-        Delay += Nf_CutPhysDelay( p, pFans, nFans );
-        // select best Cfgch
-        if ( pD->D > Delay )
+        if ( fPhys )
+        {
+            if ( PhysA < -1e29f )
+                PhysA = Scl_Int2Flt( Delay );
+            /* the delay bound of this pass was checked above, so the timing
+               key of every candidate is zero and the area decides */
+            PhysT = 0.0f;
+        }
+        // select the best match of the delay track, by the predicted arrival
+        if ( Nf_MatBetterD( pD, Delay, PhysA, AreaF, PhysC, PhysR, fPhys ) )
         {
             pD->D = Delay;
             pD->F = AreaF;
+            pD->PhysA = PhysA;
+            pD->PhysT = PhysT;
+            pD->PhysC = PhysC;
+            pD->PhysR = PhysR;
             pD->CutH = Nf_CutHandle(pCutSet, pCut);
             pD->Gate = pC->Id;
             pD->Cfg = Cfg;
             pD->Cfg.fCompl = 0;
         }
-
-        if ( pA->F > AreaF + NF_EPSILON )
+        // select the best match of the area track, by the violation and then
+        // by the area, the congestion and the routability
+        if ( Nf_MatBetterA( pA, Delay, PhysT, AreaF, PhysC, PhysR, fPhys ) )
         {
             pA->D = Delay;
             pA->F = AreaF;
+            pA->PhysA = PhysA;
+            pA->PhysT = PhysT;
+            pA->PhysC = PhysC;
+            pA->PhysR = PhysR;
             pA->CutH = Nf_CutHandle(pCutSet, pCut);
             pA->Gate = pC->Id;
             pA->Cfg = Cfg;
@@ -1336,6 +1614,8 @@ void Nf_ManCutMatch( Nf_Man_t * p, int iObj )
     Nf_Mat_t * pAn = &pBest->M[1][1];
     float FlowRefPf  = Nf_ObjFlowRefs(p, iObj, 0);
     float FlowRefNf  = Nf_ObjFlowRefs(p, iObj, 1);
+    Jf_Phys_t * pPh  = p->pPars->pPhys;
+    int fPhys        = pPh != NULL;
     int i, * pCut, * pCutSet = Nf_ObjCutSet( p, iObj );
     int Required[2] = {0};
     if ( p->Iter )
@@ -1358,24 +1638,6 @@ void Nf_ManCutMatch( Nf_Man_t * p, int iObj )
         assert( Abc_Lit2Var(Nf_CutFunc(pCut)) < Vec_WecSize(p->vTt2Match) );
         Nf_ManCutMatchOne( p, iObj, pCut, pCutSet );
     }
-    /* The physical penalty steers the choice among the cuts of this node,
-       but it is not area and must not be inherited by the fanouts through
-       the area flow, where it would be amplified at every level of logic
-       and would drive the mapper towards shallow implementations with
-       large gates.  Remove the penalty of the chosen cut again, so the
-       area flow propagated upwards is the true one. */
-    if ( p->pPars->pPhysX != NULL )
-    {
-        Nf_Mat_t * pMs[4] = { pDp, pDn, pAp, pAn };
-        int m;
-        for ( m = 0; m < 4; m++ )
-            if ( pMs[m]->F < (float)1e32 )
-            {
-                int * pCutM = Nf_CutFromHandle( pCutSet, pMs[m]->CutH );
-                pMs[m]->F -= Nf_CutPhysFlow( p, Nf_CutLeaves(pCutM), Nf_CutSize(pCutM) );
-            }
-    }
-
 /*
     if ( 461 == iObj && p->Iter == 0 )
     {
@@ -1393,52 +1655,83 @@ void Nf_ManCutMatch( Nf_Man_t * p, int iObj )
     pDn->F = pDn->F / FlowRefNf;
     pAn->F = pAn->F / FlowRefNf;
 
-    // add the inverters
+    // add the inverters; with timing data the predicted arrivals decide
     assert( pDp->D < SCL_INFINITY || pDn->D < SCL_INFINITY );
-    if ( pDp->D > pDn->D + p->InvDelayI )
+    if ( Nf_MatWorseD( pDp, pDn, p->InvDelayI, fPhys ) )
     {
         *pDp = *pDn;
         pDp->D += p->InvDelayI;
         pDp->F += p->InvAreaF;
+        pDp->PhysA += Scl_Int2Flt(p->InvDelayI);
+        pDp->PhysT = Nf_PhysViol( pPh, iObj, pDp->PhysA );
         pDp->fCompl = 1;
-        if ( pAp->D == SCL_INFINITY )
+        if ( fPhys ? !Nf_MatFeasible(pAp->D) : pAp->D == SCL_INFINITY )
             *pAp = *pDp;
         //printf( "Using inverter to improve delay at node %d in phase %d.\n", iObj, 1 );
     }
-    else if ( pDn->D > pDp->D + p->InvDelayI )
+    else if ( Nf_MatWorseD( pDn, pDp, p->InvDelayI, fPhys ) )
     {
         *pDn = *pDp;
         pDn->D += p->InvDelayI;
         pDn->F += p->InvAreaF;
+        pDn->PhysA += Scl_Int2Flt(p->InvDelayI);
+        pDn->PhysT = Nf_PhysViol( pPh, iObj, pDn->PhysA );
         pDn->fCompl = 1;
-        if ( pAn->D == SCL_INFINITY )
+        if ( fPhys ? !Nf_MatFeasible(pAn->D) : pAn->D == SCL_INFINITY )
             *pAn = *pDn;
         //printf( "Using inverter to improve delay at node %d in phase %d.\n", iObj, 0 );
     }
     //assert( pAp->F < FLT_MAX || pAn->F < FLT_MAX );
     // try replacing pos with neg
-    if ( pAp->D == SCL_INFINITY || (pAp->F > pAn->F + p->InvAreaF + NF_EPSILON && pAn->D + p->InvDelayI <= Required[0]) )
     {
-        assert( p->Iter > 0 );
-        *pAp = *pAn;
-        pAp->D += p->InvDelayI;
-        pAp->F += p->InvAreaF;
-        pAp->fCompl = 1;
-        if ( pDp->D == SCL_INFINITY )
-            *pDp = *pAp;
-        //printf( "Using inverter to improve area at node %d in phase %d.\n", iObj, 1 );
-    }
-    // try replacing neg with pos
-    else if ( pAn->D == SCL_INFINITY || (pAn->F > pAp->F + p->InvAreaF + NF_EPSILON && pAp->D + p->InvDelayI <= Required[1]) )
-    {
-        assert( p->Iter > 0 );
-        *pAn = *pAp;
-        pAn->D += p->InvDelayI;
-        pAn->F += p->InvAreaF;
-        pAn->fCompl = 1;
-        if ( pDn->D == SCL_INFINITY )
-            *pDn = *pAn;
-        //printf( "Using inverter to improve area at node %d in phase %d.\n", iObj, 0 );
+        Nf_Mat_t AnInv = *pAn;
+        int fSwap;
+        AnInv.PhysT = Nf_PhysViol( pPh, iObj, AnInv.PhysA + Scl_Int2Flt(p->InvDelayI) );
+        fSwap = !fPhys ?
+            (pAp->D == SCL_INFINITY || (pAp->F > pAn->F + p->InvAreaF + NF_EPSILON && pAn->D + p->InvDelayI <= Required[0])) :
+            (pAn->D + p->InvDelayI <= Required[0] && pAn->D + p->InvDelayI < SCL_INFINITY &&
+             (!Nf_MatFeasible(pAp->D) ||
+              Nf_PhysCompare( AnInv.PhysT, AnInv.F + p->InvAreaF, AnInv.PhysC, AnInv.PhysR,
+                              pAp->PhysT, pAp->F, pAp->PhysC, pAp->PhysR ) < 0));
+        if ( fSwap )
+        {
+            assert( p->Iter > 0 );
+            *pAp = *pAn;
+            pAp->D += p->InvDelayI;
+            pAp->F += p->InvAreaF;
+            pAp->PhysA += Scl_Int2Flt(p->InvDelayI);
+            pAp->PhysT = Nf_PhysViol( pPh, iObj, pAp->PhysA );
+            pAp->fCompl = 1;
+            if ( fPhys ? !Nf_MatFeasible(pDp->D) : pDp->D == SCL_INFINITY )
+                *pDp = *pAp;
+            //printf( "Using inverter to improve area at node %d in phase %d.\n", iObj, 1 );
+        }
+        else
+        {
+            Nf_Mat_t ApInv = *pAp;
+            int fSwap2;
+            ApInv.PhysT = Nf_PhysViol( pPh, iObj, ApInv.PhysA + Scl_Int2Flt(p->InvDelayI) );
+            fSwap2 = !fPhys ?
+                (pAn->D == SCL_INFINITY || (pAn->F > pAp->F + p->InvAreaF + NF_EPSILON && pAp->D + p->InvDelayI <= Required[1])) :
+                (pAp->D + p->InvDelayI <= Required[1] && pAp->D + p->InvDelayI < SCL_INFINITY &&
+                 (!Nf_MatFeasible(pAn->D) ||
+                  Nf_PhysCompare( ApInv.PhysT, ApInv.F + p->InvAreaF, ApInv.PhysC, ApInv.PhysR,
+                                  pAn->PhysT, pAn->F, pAn->PhysC, pAn->PhysR ) < 0));
+            // try replacing neg with pos
+            if ( fSwap2 )
+            {
+                assert( p->Iter > 0 );
+                *pAn = *pAp;
+                pAn->D += p->InvDelayI;
+                pAn->F += p->InvAreaF;
+                pAn->PhysA += Scl_Int2Flt(p->InvDelayI);
+                pAn->PhysT = Nf_PhysViol( pPh, iObj, pAn->PhysA );
+                pAn->fCompl = 1;
+                if ( fPhys ? !Nf_MatFeasible(pDn->D) : pDn->D == SCL_INFINITY )
+                    *pDn = *pAn;
+                //printf( "Using inverter to improve area at node %d in phase %d.\n", iObj, 0 );
+            }
+        }
     }
 
     if ( pDp->D == SCL_INFINITY )
@@ -1895,6 +2188,30 @@ word Nf_MatchRefArea( Nf_Man_t * p, int i, int c, Nf_Mat_t * pM, int Required )
     }
     return Area;
 }
+/* Returns 1 when a candidate match of the area-recovery pass, with area F,
+   congestion C and routability R, beats the best one found so far.  The
+   candidates of this pass all meet the required time of the object, so the
+   timing key does not separate them: the area decides first, and the
+   congestion and the routability break the ties the area leaves.  When the
+   physical keys cannot separate two matches of the same area, the faster
+   one wins, which is the tie-break of "&nf": the reference counts of the
+   area recovery are incremented along the chosen matches, so leaving the
+   slower match in place would change the area seen by the nodes that are
+   recovered later. */
+static inline int Nf_MatBetterEla( Nf_Mat_t * pRes, int D, float F, float C, float R )
+{
+    int Cmp;
+    if ( pRes->D == SCL_INFINITY )
+        return 1;
+    if ( pRes->F > F + NF_EPSILON )
+        return 1;
+    if ( pRes->F > F - NF_EPSILON )
+    {
+        Cmp = Nf_PhysCompare( 0.0f, 0.0f, C, R, 0.0f, 0.0f, pRes->PhysC, pRes->PhysR );
+        return Cmp != 0 ? Cmp < 0 : pRes->D > D;
+    }
+    return 0;
+}
 void Nf_ManElaBestMatchOne( Nf_Man_t * p, int iObj, int c, int * pCut, int * pCutSet, Nf_Mat_t * pRes, int Required )
 {
     Nf_Mat_t Mb,*pMb = &Mb, * pMd;
@@ -1904,6 +2221,8 @@ void Nf_ManElaBestMatchOne( Nf_Man_t * p, int iObj, int c, int * pCut, int * pCu
     int fComplExt    = Abc_LitIsCompl(iFuncLit);
     Vec_Int_t * vArr = Vec_WecEntry( p->vTt2Match, Abc_Lit2Var(iFuncLit) );
     int i, k, Info, Offset, iFanin, fComplF;
+    int fPhys  = p->pPars->pPhys != NULL;
+    float PhysC = 0.0f, PhysR = 0.0f;
     // assign fanins matches
     Nf_Obj_t * pBestF[NF_LEAF_MAX];
     for ( i = 0; i < nFans; i++ )
@@ -1924,11 +2243,21 @@ void Nf_ManElaBestMatchOne( Nf_Man_t * p, int iObj, int c, int * pCut, int * pCu
 //        pMb->Conf = 0;
         pMb->Cfg = Nf_Int2Cfg(0);
         pMb->fBest = 1;
+        pMb->PhysA = 0.0f;
+        pMb->PhysT = 0.0f;
+        pMb->PhysC = 0.0f;
+        pMb->PhysR = 0.0f;
         // compare
-        if ( pRes->F > pMb->F + NF_EPSILON || (pRes->F > pMb->F - NF_EPSILON && pRes->D > pMb->D) )
+        if ( fPhys ?
+             Nf_MatBetterEla( pRes, pMb->D, pMb->F, pMb->PhysC, pMb->PhysR ) :
+             (pRes->D == SCL_INFINITY ||
+              (pRes->F > pMb->F + NF_EPSILON ||
+               (pRes->F > pMb->F - NF_EPSILON && pRes->D > pMb->D))) )
             *pRes = *pMb;
         return;
     }
+    PhysC = Nf_CutPhysCong( p, iObj, pFans, nFans );
+    PhysR = Nf_CutPhysRout( p, iObj, pFans, nFans );
     // consider matches of this function
     Vec_IntForEachEntryDouble( vArr, Info, Offset, i )
     {
@@ -1936,6 +2265,7 @@ void Nf_ManElaBestMatchOne( Nf_Man_t * p, int iObj, int c, int * pCut, int * pCu
         Mio_Cell2_t*pC = Nf_ManCell( p, Info );
         int fCompl     = Cfg.fCompl ^ fComplExt;
         int Delay      = 0;
+        float PhysA    = -1e30f, PhysT = 0.0f;
         assert( nFans == (int)pC->nFanins );
         if ( fCompl != c )
             continue;
@@ -1943,7 +2273,10 @@ void Nf_ManElaBestMatchOne( Nf_Man_t * p, int iObj, int c, int * pCut, int * pCu
         {
             pMd     = &pBestF[iFanin]->M[fComplF][0];
             assert( pMd->fBest );
-            Delay = Abc_MaxInt( Delay, pMd->D + pC->iDelays[k] );
+            Delay = Abc_MaxInt( Delay, Nf_PhysAdd( pMd->D, pC->iDelays[k], fPhys ) );
+            if ( fPhys )
+                PhysA = Abc_MaxFloat( PhysA, Nf_PhysPinArr( p, iObj, pFans[iFanin],
+                        Nf_PhysAdd( pMd->D, pC->iDelays[k], fPhys ) ) );
             if ( Delay > Required )
                 break;
         }
@@ -1958,13 +2291,27 @@ void Nf_ManElaBestMatchOne( Nf_Man_t * p, int iObj, int c, int * pCut, int * pCu
         pMb->Gate = pC->Id;
         pMb->Cfg = Cfg;
         pMb->Cfg.fCompl = 0;
-        // compute area
+        // compute the area; the physical keys steer only the comparison, so
+        // the area-recovery rounds do not undo the cut selection
         pMb->F = Scl_Int2Flt((int)Nf_MatchRefArea(p, iObj, c, pMb, Required));
-        // the area-recovery rounds have to keep the physical preference,
-        // otherwise they undo what the cut selection just optimized
-        pMb->F += Nf_CutPhysFlow( p, pFans, nFans );
-        // compare
-        if ( pRes->F > pMb->F + NF_EPSILON || (pRes->F > pMb->F - NF_EPSILON && pRes->D > pMb->D) )
+        if ( fPhys )
+        {
+            if ( PhysA < -1e29f )
+                PhysA = Scl_Int2Flt( Delay );
+            PhysT = Nf_PhysViol( p->pPars->pPhys, iObj, PhysA );
+        }
+        pMb->PhysA = PhysA;
+        pMb->PhysT = PhysT;
+        pMb->PhysC = PhysC;
+        pMb->PhysR = PhysR;
+        // compare; a match that leaves the Scl range is a fallback only
+        if ( !fPhys ?
+             (pRes->D == SCL_INFINITY ||
+              (pRes->F > pMb->F + NF_EPSILON ||
+               (pRes->F > pMb->F - NF_EPSILON && pRes->D > pMb->D))) :
+             (Nf_MatFeasible( pMb->D ) ?
+              Nf_MatBetterEla( pRes, pMb->D, pMb->F, pMb->PhysC, pMb->PhysR ) :
+              (!Nf_MatFeasible( pRes->D ) && pMb->D <= pRes->D)) )
             *pRes = *pMb;
     }
 }
@@ -1994,6 +2341,9 @@ int Nf_ManComputeArrival( Nf_Man_t * p, Nf_Mat_t * pM, int * pCutSet )
         Delay = Abc_MaxInt( Delay, pMfan->D + pCell->iDelays[k] );
     }
     //if ( pM->fCompl ) Delay += p->InvDelayI;
+    // the arrival saturates instead of leaving the Scl range (physical mode)
+    if ( p->pPars->pPhys != NULL && Delay > SCL_INFINITY - 1 )
+        Delay = SCL_INFINITY - 1;
     return Delay;
 }
 void Nf_ManResetMatches( Nf_Man_t * p, int Round )
@@ -2956,6 +3306,13 @@ void Gia_ManTransferCellMapping( Gia_Man_t * p, Gia_Man_t * pGia )
         }
         Vec_IntPush( p->vCellMapping, Gia_ObjCellId(pGia, iLit) );
     }
+    if ( pGia->vCellNames != NULL && p != pGia )
+    {
+        Vec_PtrFreeP( &p->vCellNames );
+        p->vCellNames = pGia->vCellNames;
+        pGia->vCellNames = NULL;
+    }
+    memcpy( p->CellMatchPars, pGia->CellMatchPars, sizeof(p->CellMatchPars) );
     Gia_ManCellMappingVerify( p );
 }
 Gia_Man_t * Nf_ManPerformMapping( Gia_Man_t * p, Jf_Par_t * pPars )

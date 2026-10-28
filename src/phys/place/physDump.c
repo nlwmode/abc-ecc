@@ -26,6 +26,7 @@
 #include "phys/lib/physLef.h"
 #include "phys/lib/physLiberty.h"
 #include "phys/place/physPlace.h"
+#include "phys/place/physCong.h"
 #include "phys/place/physDump.h"
 
 ABC_NAMESPACE_IMPL_START
@@ -49,6 +50,34 @@ typedef struct Phys_DumpNet_t_
     float      Hpwl;
 } Phys_DumpNet_t;
 
+/* color stops for a single-hue, colorblind-safe sequential ramp */
+typedef struct Phys_DumpStop_t_
+{
+    float Pos;
+    int   R, G, B;
+} Phys_DumpStop_t;
+
+/* cell density: one blue ramp, light (empty) to medium (full).  The
+   ramp deliberately stops before the darkest blue so that the density
+   stays a background wash and the cell boxes drawn on top keep the
+   strongest contrast. */
+static const Phys_DumpStop_t Phys_DumpDensityStops[] = {
+    { 0.00f, 234, 243, 254 },
+    { 0.25f, 205, 226, 251 },
+    { 0.50f, 158, 197, 244 },
+    { 0.75f, 109, 167, 236 },
+    { 1.00f,  57, 135, 229 }
+};
+
+/* congestion: the next sequential hue, orange, light (empty) to dark */
+static const Phys_DumpStop_t Phys_DumpCongStops[] = {
+    { 0.00f, 253, 240, 232 },
+    { 0.25f, 248, 201, 178 },
+    { 0.50f, 242, 155, 114 },
+    { 0.75f, 235, 104,  52 },
+    { 1.00f, 168,  58,  18 }
+};
+
 
 static char * Phys_DumpStrdup( const char * p )
 {
@@ -64,6 +93,7 @@ void Phys_DumpSetDefault( Phys_DumpPars_t * p )
     p->pTag      = NULL;
     p->nMaxNets  = 2000;
     p->nBins     = 32;
+    p->nCongBins = 64;
     p->fVerbose  = 0;
 }
 
@@ -204,27 +234,37 @@ static void Phys_DumpFreeLines( Vec_Ptr_t * vLines )
     Vec_PtrFree( vLines );
 }
 
-/* white for an empty bin, orange for half full, red for full */
-static void Phys_DumpColor( float Ratio, char * pStr )
+/* interpolates a one-hue ramp; Ratio is clamped to [0, 1] */
+static void Phys_DumpRamp( const Phys_DumpStop_t * pStops, int nStops, float Ratio, char * pStr )
 {
-    int R, G, B;
+    int i;
+    float R, G, B, u;
     if ( Ratio < 0.0f ) Ratio = 0.0f;
     if ( Ratio > 1.0f ) Ratio = 1.0f;
-    if ( Ratio < 0.5f )
-    {
-        float u = Ratio / 0.5f;
-        R = 255;
-        G = 255 - (int)(120.0f * u);
-        B = 255 - (int)(210.0f * u);
-    }
-    else
-    {
-        float u = (Ratio - 0.5f) / 0.5f;
-        R = 255 - (int)(28.0f * u);
-        G = 135 - (int)(80.0f * u);
-        B = 45  + (int)(20.0f * u);
-    }
-    sprintf( pStr, "#%02x%02x%02x", R, G, B );
+    for ( i = 1; i < nStops; i++ )
+        if ( Ratio <= pStops[i].Pos || i == nStops - 1 )
+            break;
+    u = (Ratio - pStops[i-1].Pos) / (pStops[i].Pos - pStops[i-1].Pos);
+    if ( u < 0.0f ) u = 0.0f;
+    if ( u > 1.0f ) u = 1.0f;
+    R = pStops[i-1].R + u * (float)(pStops[i].R - pStops[i-1].R);
+    G = pStops[i-1].G + u * (float)(pStops[i].G - pStops[i-1].G);
+    B = pStops[i-1].B + u * (float)(pStops[i].B - pStops[i-1].B);
+    sprintf( pStr, "#%02x%02x%02x", (int)(R + 0.5f), (int)(G + 0.5f), (int)(B + 0.5f) );
+}
+
+static void Phys_DumpColorDensity( float Ratio, char * pStr )
+{
+    Phys_DumpRamp( Phys_DumpDensityStops,
+                   (int)(sizeof(Phys_DumpDensityStops) / sizeof(Phys_DumpDensityStops[0])),
+                   Ratio, pStr );
+}
+
+static void Phys_DumpColorCongestion( float Ratio, char * pStr )
+{
+    Phys_DumpRamp( Phys_DumpCongStops,
+                   (int)(sizeof(Phys_DumpCongStops) / sizeof(Phys_DumpCongStops[0])),
+                   Ratio, pStr );
 }
 
 /* the coordinates of an object, if it has one */
@@ -240,6 +280,34 @@ static int Phys_DumpObjPos( Phys_Man_t * p, int iObj, float Dbu, float * pX, flo
     *pX = (float)x / Dbu;
     *pY = (float)y / Dbu;
     return 1;
+}
+
+/* the edges of the critical path: one line per pair of consecutive path
+   objects that both have a placement position.  The style lives on the
+   enclosing group, so the same helper draws the halo and the stroke. */
+static void Phys_DumpPathEdges( FILE * f, Phys_Man_t * p, float Dbu, float MarginX,
+                                float TopY, float X0, float Y0, float H, float Scale )
+{
+    float PrevX = 0.0f, PrevY = 0.0f;
+    int fPrev = 0, k, iObj;
+    if ( p->vPathObjs == NULL )
+        return;
+    for ( k = 0; k < Vec_IntSize(p->vPathObjs); k++ )
+    {
+        float Px, Py;
+        iObj = Vec_IntEntry( p->vPathObjs, k );
+        if ( !Phys_DumpObjPos( p, iObj, Dbu, &Px, &Py ) )
+            /* an object inside a mapped cell has no position of its own;
+               the path just passes through it to the next placed object */
+            continue;
+        if ( fPrev )
+            fprintf( f, "<line x1=\"%.2f\" y1=\"%.2f\" x2=\"%.2f\" y2=\"%.2f\"/>\n",
+                     MarginX + (PrevX - X0) * Scale, TopY + (Y0 + H - PrevY) * Scale,
+                     MarginX + (Px - X0) * Scale,    TopY + (Y0 + H - Py) * Scale );
+        PrevX = Px;
+        PrevY = Py;
+        fPrev = 1;
+    }
 }
 
 static void Phys_DumpNetAdd( Vec_Ptr_t * vNets, int iDriver, int iSink )
@@ -266,7 +334,7 @@ static Vec_Ptr_t * Phys_DumpBuildNets( Phys_Man_t * p, Gia_Man_t * pGia, int nOb
     for ( i = 1; i < nObjs; i++ )
     {
         Gia_Obj_t * pObj = Gia_ManObj( pGia, i );
-        int iLit;
+        int nFans;
         if ( Gia_ObjIsPo(pGia, pObj) )
         {
             Phys_DumpNetAdd( vNets, Abc_Lit2Var(Gia_ObjFaninLit0(pObj, i)), i );
@@ -274,11 +342,9 @@ static Vec_Ptr_t * Phys_DumpBuildNets( Phys_Man_t * p, Gia_Man_t * pGia, int nOb
         }
         if ( Vec_PtrEntry(p->vObjToCell, i) == NULL )
             continue;
-        iLit = Vec_IntEntry( p->vObjCellLit, i );
-        if ( iLit < 0 )
-            continue;
-        for ( k = 0; k < Gia_ObjCellSize(pGia, iLit); k++ )
-            Phys_DumpNetAdd( vNets, Abc_Lit2Var(Gia_ObjCellFanin(pGia, iLit, k)), i );
+        nFans = Phys_ManObjFaninNum( p, pGia, i );
+        for ( k = 0; k < nFans; k++ )
+            Phys_DumpNetAdd( vNets, Abc_Lit2Var(Phys_ManObjFaninLit( p, pGia, i, k )), i );
     }
     return vNets;
 }
@@ -288,6 +354,135 @@ static int Phys_DumpCompareNets( const void * p1, const void * p2 )
     float a = ((const Phys_DumpNet_t *)p1)->Hpwl;
     float b = ((const Phys_DumpNet_t *)p2)->Hpwl;
     return a < b ? 1 : a > b ? -1 : 0;
+}
+
+
+static void Phys_DumpCongWriteCsv( const char * pFile, Phys_Cong_t * pCong )
+{
+    FILE * f = fopen( pFile, "w" );
+    int bx, by;
+    if ( f == NULL )
+        return;
+    fprintf( f, "bin_x,bin_y,x0_um,y0_um,x1_um,y1_um,rudy_um,routing_um,congestion,overflow\n" );
+    for ( by = 0; by < pCong->nY; by++ )
+    for ( bx = 0; bx < pCong->nX; bx++ )
+    {
+        int i = by * pCong->nX + bx;
+        fprintf( f, "%d,%d,%.3f,%.3f,%.3f,%.3f,%.5f,%.5f,%.5f,%d\n",
+                 bx, by,
+                 pCong->X0 + bx * pCong->BinW, pCong->Y0 + by * pCong->BinH,
+                 pCong->X0 + (bx + 1) * pCong->BinW, pCong->Y0 + (by + 1) * pCong->BinH,
+                 pCong->pDemand[i], pCong->Supply, pCong->pCong[i],
+                 pCong->pCong[i] > 1.0f ? 1 : 0 );
+    }
+    fclose( f );
+}
+
+/**Function*************************************************************
+
+  Synopsis    [Writes the RUDY routability picture]
+
+  Description [The bins are colored with the orange one-hue ramp used for
+               the second sequential context (the placement background
+               uses blue).  Bins whose demand exceeds the routing supply
+               get a critical-red outline, so overflow is not carried by
+               color alone.  A color bar makes the scale readable.]
+
+  SideEffects [Creates a file]
+
+***********************************************************************/
+
+static void Phys_DumpCongWriteSvg( const char * pFile, const char * pDesign,
+                                   const char * pTag, Phys_Cong_t * pCong )
+{
+    FILE * f = fopen( pFile, "w" );
+    float Scale, MarginX = 40.0f, TopY = 82.0f, BottomY = 66.0f;
+    float CoreW, CoreH, MaxRatio, BarX, BarY, BarW, BarH;
+    int ImgW, ImgH, bx, by, s, nSeg = 48;
+    char Color[16];
+    if ( f == NULL )
+        return;
+    Scale  = 1000.0f / (pCong->W > pCong->H ? pCong->W : pCong->H);
+    CoreW  = pCong->W * Scale;
+    CoreH  = pCong->H * Scale;
+    ImgW   = (int)( CoreW + 2 * MarginX + 0.5f );
+    ImgH   = (int)( CoreH + TopY + BottomY + 0.5f );
+    MaxRatio = pCong->MaxCong > 1e-9f ? pCong->MaxCong : 0.0f;
+    fprintf( f, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" );
+    fprintf( f, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%d\" height=\"%d\" "
+                "viewBox=\"0 0 %d %d\">\n", ImgW, ImgH, ImgW, ImgH );
+    fprintf( f, "<rect width=\"100%%\" height=\"100%%\" fill=\"#fcfcfb\"/>\n" );
+    fprintf( f, "<text x=\"8\" y=\"22\" font-family=\"sans-serif\" font-size=\"14\" fill=\"#0b0b0b\">"
+                "%s &#8211; %s: RUDY routability, max congestion %.2f</text>\n",
+                pDesign, pTag, pCong->MaxCong );
+    fprintf( f, "<text x=\"8\" y=\"42\" font-family=\"sans-serif\" font-size=\"11\" fill=\"#52514e\">"
+                "%d x %d bins; wire demand %.1f um, routing supply %.1f um; "
+                "%d bin(s) over capacity</text>\n",
+                pCong->nX, pCong->nY, pCong->TotalDemand, pCong->TotalSupply, pCong->nOverflow );
+    if ( pCong->nOverflow > 0 )
+        fprintf( f, "<text x=\"8\" y=\"58\" font-family=\"sans-serif\" font-size=\"11\" fill=\"#898781\">"
+                    "orange: uniformly spread wire demand; red outline: demand above routing supply</text>\n" );
+    else
+        fprintf( f, "<text x=\"8\" y=\"58\" font-family=\"sans-serif\" font-size=\"11\" fill=\"#898781\">"
+                    "orange: uniformly spread wire demand; no bin exceeds the routing supply</text>\n" );
+    /* the bins */
+    fprintf( f, "<g id=\"congestion\">\n" );
+    for ( by = 0; by < pCong->nY; by++ )
+    for ( bx = 0; bx < pCong->nX; bx++ )
+    {
+        int i = by * pCong->nX + bx;
+        if ( pCong->pDemand[i] <= 0.0f )
+            continue;
+        Phys_DumpColorCongestion( MaxRatio > 0.0f ? pCong->pCong[i] / MaxRatio : 0.0f, Color );
+        fprintf( f, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" fill=\"%s\"/>\n",
+                 MarginX + bx * pCong->BinW * Scale,
+                 TopY + (pCong->H - (by + 1) * pCong->BinH) * Scale,
+                 pCong->BinW * Scale + 0.5f, pCong->BinH * Scale + 0.5f, Color );
+    }
+    fprintf( f, "</g>\n" );
+    if ( pCong->nOverflow > 0 )
+    {
+        fprintf( f, "<g id=\"overflow\" fill=\"none\" stroke=\"#d03b3b\" "
+                    "stroke-width=\"0.8\" stroke-opacity=\"0.9\">\n" );
+        for ( by = 0; by < pCong->nY; by++ )
+        for ( bx = 0; bx < pCong->nX; bx++ )
+            if ( pCong->pCong[by * pCong->nX + bx] > 1.0f )
+                fprintf( f, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\"/>\n",
+                         MarginX + bx * pCong->BinW * Scale,
+                         TopY + (pCong->H - (by + 1) * pCong->BinH) * Scale,
+                         pCong->BinW * Scale, pCong->BinH * Scale );
+        fprintf( f, "</g>\n" );
+    }
+    fprintf( f, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" "
+                "fill=\"none\" stroke=\"#52514e\" stroke-width=\"1\"/>\n",
+             MarginX, TopY, CoreW, CoreH );
+    /* the color bar */
+    BarX = MarginX;
+    BarY = TopY + CoreH + 16.0f;
+    BarW = CoreW < 280.0f ? CoreW : 280.0f;
+    BarH = 10.0f;
+    fprintf( f, "<text x=\"%.2f\" y=\"%.2f\" font-family=\"sans-serif\" font-size=\"10\" "
+                "fill=\"#52514e\">congestion (demand / supply)</text>\n", BarX, BarY - 5.0f );
+    for ( s = 0; s < nSeg; s++ )
+    {
+        Phys_DumpColorCongestion( (s + 0.5f) / (float)nSeg, Color );
+        fprintf( f, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" fill=\"%s\"/>\n",
+                 BarX + BarW * s / (float)nSeg, BarY,
+                 BarW / (float)nSeg + 0.3f, BarH, Color );
+    }
+    fprintf( f, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" "
+                "fill=\"none\" stroke=\"#c3c2b7\" stroke-width=\"0.8\"/>\n",
+             BarX, BarY, BarW, BarH );
+    fprintf( f, "<text x=\"%.2f\" y=\"%.2f\" font-family=\"sans-serif\" font-size=\"10\" "
+                "fill=\"#52514e\">0</text>\n", BarX, BarY + BarH + 12.0f );
+    fprintf( f, "<text x=\"%.2f\" y=\"%.2f\" font-family=\"sans-serif\" font-size=\"10\" "
+                "fill=\"#52514e\" text-anchor=\"middle\">%.3f</text>\n",
+             BarX + 0.5f * BarW, BarY + BarH + 12.0f, 0.5f * MaxRatio );
+    fprintf( f, "<text x=\"%.2f\" y=\"%.2f\" font-family=\"sans-serif\" font-size=\"10\" "
+                "fill=\"#52514e\" text-anchor=\"end\">%.3f</text>\n",
+             BarX + BarW, BarY + BarH + 12.0f, MaxRatio );
+    fprintf( f, "</svg>\n" );
+    fclose( f );
 }
 
 
@@ -323,9 +518,13 @@ static void Phys_DumpWriteIndex( const char * pDir )
     fprintf( f, "tr:nth-child(even){background:#f4f4f4;}code{color:#555;}</style></head><body>\n" );
     fprintf( f, "<h1>Physical synthesis workspace</h1>\n" );
     fprintf( f, "<p>Every design has a <code>placement.log</code> with one record per dump, "
-                "and one snapshot per tag: an SVG picture of the placement, plus CSV files "
-                "with the cell geometries, the net bounding boxes, the bin density, and the "
-                "row occupancy.</p>\n" );
+                "and one snapshot per tag: a placement picture with translucent standard-cell "
+                "boxes, a RUDY routability map, and CSV files with the cell geometries, the net "
+                "bounding boxes, the bin density, the per-bin congestion, and the row occupancy. "
+                "When the snapshot has timing data, the critical path traced by "
+                "<code>&amp;phys_sta</code> is drawn in magenta on top of the placement, with "
+                "its cells repainted; the path objects are listed in "
+                "<code>critical_path.csv</code>.</p>\n" );
     fprintf( f, "<table><tr><th>design</th><th>snapshots</th><th>log</th></tr>\n" );
     Vec_PtrForEachEntry( char *, vDesigns, pDesign, i )
     {
@@ -336,8 +535,37 @@ static void Phys_DumpWriteIndex( const char * pDir )
         int k;
         fprintf( f, "<tr><td><b>%s</b></td><td>", pDesign );
         Vec_PtrForEachEntry( char *, vSnaps, pTag, k )
-            fprintf( f, "%s<a href=\"%s/%s.svg\">%s</a>",
-                     k ? " &middot; " : "", pDesign, pTag, pTag );
+        {
+            char * pRoute = Phys_DumpSnapFile( pDir, pDesign, pTag, "routability.svg" );
+            char * pCong  = Phys_DumpSnapFile( pDir, pDesign, pTag, "congestion.csv" );
+            char * pPath  = Phys_DumpSnapFile( pDir, pDesign, pTag, "critical_path.csv" );
+            FILE * fRoute = fopen( pRoute, "r" );
+            FILE * fCong  = fopen( pCong, "r" );
+            FILE * fPath  = fopen( pPath, "r" );
+            fprintf( f, "%s<b>%s</b>: <a href=\"%s/%s.svg\">placement</a>",
+                     k ? "<br>" : "", pTag, pDesign, pTag );
+            if ( fRoute != NULL )
+            {
+                fprintf( f, " &middot; <a href=\"%s/%s.routability.svg\">routability</a>",
+                         pDesign, pTag );
+                fclose( fRoute );
+            }
+            if ( fCong != NULL )
+            {
+                fprintf( f, " &middot; <a href=\"%s/%s.congestion.csv\">congestion.csv</a>",
+                         pDesign, pTag );
+                fclose( fCong );
+            }
+            if ( fPath != NULL )
+            {
+                fprintf( f, " &middot; <a href=\"%s/%s.critical_path.csv\">critical_path.csv</a>",
+                         pDesign, pTag );
+                fclose( fPath );
+            }
+            ABC_FREE( pRoute );
+            ABC_FREE( pCong );
+            ABC_FREE( pPath );
+        }
         fprintf( f, "</td><td><a href=\"%s/placement.log\">placement.log</a>", pDesign );
         if ( fRun != NULL )
         {
@@ -369,15 +597,18 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
 {
     Phys_DumpCell_t * pCells;
     Phys_DumpNet_t * pNets, * pNet;
+    Phys_Cong_t Cong = {0}, * pCongSrc;
     Vec_Ptr_t * vNets, * vSnaps, * vDesigns;
     float * pBinArea;
     float * pRowUsed;
     int * pRowCells;
     char * pDir, * pDesign, * pTag, * pDesignDir;
     char * pLog, * pSvg, * pCellsFile, * pNetsFile, * pDensity, * pRows, * pSnapsFile;
+    char * pCongFile, * pRouteSvg, * pPathFile;
     char Color[16], TimeStr[32];
+    int fCong, fPath, nPathCells = 0;
     FILE * f;
-    float Dbu, X0, Y0, W, H, TotalArea = 0.0f, MaxRowOcc = 0.0f;
+    float Dbu, X0, Y0, W, H, TotalArea = 0.0f, MaxRowOcc = 0.0f, PathLen = 0.0f;
     float BinW, BinH, Scale, Margin = 40.0f, HpwlSum = 0.0f;
     int nObjs, nCells = 0, nNets = 0, nRows, nRowsUsed = 0, nBinsX, nBinsY;
     int nDrawNets, i, k, x, y, w, h;
@@ -514,11 +745,11 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
         pNets[nNets++] = *pNet;
     }
     qsort( pNets, nNets, sizeof(Phys_DumpNet_t), Phys_DumpCompareNets );
-    /* density bins: square bins, never finer than a few rows, because a
-       bin smaller than a cell only shows that the cell covers it */
+    /* density bins: square bins, never finer than one standard-cell row,
+       because a bin smaller than a row only shows that the row covers it */
     {
         float BinTarget = (W > H ? W : H) / (float)(pPars->nBins < 1 ? 1 : pPars->nBins);
-        float MinBin = 4.0f * (float)pMan->SiteH / Dbu;
+        float MinBin = (float)pMan->SiteH / Dbu;
         if ( BinTarget < MinBin )
             BinTarget = MinBin;
         nBinsX = (int)( W / BinTarget + 0.999f );
@@ -554,12 +785,43 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
                 pBinArea[by * nBinsX + bx] += (Ox1 - Ox0) * (Oy1 - Oy0);
         }
     }
+    /* RUDY routability: per-bin wire demand divided by routing supply.
+       The placer already built this map; reuse it so the picture and the
+       mapper see exactly the same numbers. */
+    pCongSrc = pMan->pCong != NULL ? pMan->pCong : Phys_CongBuild( pMan, pGia, pPars->nCongBins );
+    fCong = pCongSrc != NULL;
+    if ( fCong )
+        Cong = *pCongSrc;
+    /* the critical path traced by the last &phys_sta, if any */
+    fPath = pMan->fTimed && pMan->vPathObjs != NULL && pMan->vObjPath != NULL &&
+            Vec_IntSize(pMan->vPathObjs) > 1 && Vec_IntSize(pMan->vObjPath) >= nObjs;
+    if ( fPath )
+    {
+        float PrevX = 0.0f, PrevY = 0.0f;
+        int fPrev = 0;
+        Vec_IntForEachEntry( pMan->vPathObjs, x, k )
+        {
+            float Px, Py;
+            if ( Vec_PtrEntry(pMan->vObjToCell, x) != NULL )
+                nPathCells++;
+            if ( !Phys_DumpObjPos( pMan, x, Dbu, &Px, &Py ) )
+                continue;
+            if ( fPrev )
+                PathLen += fabs( Px - PrevX ) + fabs( Py - PrevY );
+            PrevX = Px;
+            PrevY = Py;
+            fPrev = 1;
+        }
+    }
     /* the CSV files of this snapshot */
     pCellsFile   = Phys_DumpSnapFile( pDir, pDesign, pTag, "cells.csv" );
     pNetsFile    = Phys_DumpSnapFile( pDir, pDesign, pTag, "nets.csv" );
     pDensity     = Phys_DumpSnapFile( pDir, pDesign, pTag, "density.csv" );
+    pCongFile    = Phys_DumpSnapFile( pDir, pDesign, pTag, "congestion.csv" );
     pRows        = Phys_DumpSnapFile( pDir, pDesign, pTag, "rows.csv" );
+    pPathFile    = Phys_DumpSnapFile( pDir, pDesign, pTag, "critical_path.csv" );
     pSvg         = Phys_DumpSnapFile( pDir, pDesign, pTag, "svg" );
+    pRouteSvg    = Phys_DumpSnapFile( pDir, pDesign, pTag, "routability.svg" );
     pLog         = Phys_DumpJoin3( pDir, pDesign, "placement.log" );
     pSnapsFile   = Phys_DumpJoin3( pDir, pDesign, "snapshots.txt" );
     if ( (f = fopen( pCellsFile, "w" )) != NULL )
@@ -603,26 +865,81 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
                      k, Y0 + (k + 0.5) * pMan->SiteH / Dbu, pRowCells[k], pRowUsed[k], W, pRowUsed[k] / W );
         fclose( f );
     }
+    if ( fCong )
+        Phys_DumpCongWriteCsv( pCongFile, &Cong );
+    if ( fPath && (f = fopen( pPathFile, "w" )) != NULL )
+    {
+        fprintf( f, "step,obj,cell,x_um,y_um,arrival_ps,required_ps,slack_ps\n" );
+        Vec_IntForEachEntry( pMan->vPathObjs, x, k )
+        {
+            Phys_LibCell_t * pCell = (Phys_LibCell_t *)Vec_PtrEntry( pMan->vObjToCell, x );
+            float Px = 0.0f, Py = 0.0f;
+            float Arr = 0.0f, Req = 1e30f, Slack = -1.0f;
+            int fPos = Phys_DumpObjPos( pMan, x, Dbu, &Px, &Py );
+            if ( x < Vec_FltSize(pMan->vObjArrRise) && x < Vec_FltSize(pMan->vObjArrFall) )
+                Arr = Abc_MaxFloat( Vec_FltEntry(pMan->vObjArrRise, x),
+                                    Vec_FltEntry(pMan->vObjArrFall, x) );
+            if ( x < Vec_FltSize(pMan->vObjReq) )
+                Req = Vec_FltEntry( pMan->vObjReq, x );
+            if ( x < Vec_FltSize(pMan->vObjSlack) )
+                Slack = Vec_FltEntry( pMan->vObjSlack, x );
+            fprintf( f, "%d,%d,%s,", k, x, pCell && pCell->pName ? pCell->pName : "" );
+            if ( fPos )
+                fprintf( f, "%.3f,%.3f", Px, Py );
+            else
+                fprintf( f, "," );
+            fprintf( f, ",%.2f,", Arr );
+            if ( Req < 1e29f )
+                fprintf( f, "%.2f", Req );
+            fprintf( f, "," );
+            if ( Slack >= 0.0f )
+                fprintf( f, "%.2f", Slack );
+            fprintf( f, "\n" );
+        }
+        fclose( f );
+    }
+    else if ( !fPath )
+        remove( pPathFile );
     /* the picture */
     Scale  = 1100.0f / (W > H ? W : H);
     nDrawNets = pPars->nMaxNets < nNets ? pPars->nMaxNets : nNets;
     if ( (f = fopen( pSvg, "w" )) != NULL )
     {
-        float MarginX = Margin, MarginY = Margin + 16.0f;
-        int ImgW = (int)( W * Scale + 2 * MarginX + 0.5f );
-        int ImgH = (int)( H * Scale + 2 * MarginY + 0.5f );
+        float MarginX = Margin, TopY = fPath ? 90.0f : 68.0f, BottomY = 58.0f;
+        float CoreW = W * Scale, CoreH = H * Scale;
+        float BarX, BarY, BarW, BarH;
+        int ImgW = (int)( CoreW + 2 * MarginX + 0.5f );
+        int ImgH = (int)( CoreH + TopY + BottomY + 0.5f );
+        int s, nSeg = 48;
         fprintf( f, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" );
         fprintf( f, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%d\" height=\"%d\" "
                     "viewBox=\"0 0 %d %d\">\n", ImgW, ImgH, ImgW, ImgH );
-        fprintf( f, "<rect width=\"100%%\" height=\"100%%\" fill=\"#ffffff\"/>\n" );
-        fprintf( f, "<text x=\"8\" y=\"20\" font-family=\"sans-serif\" font-size=\"14\" fill=\"#222\">"
+        fprintf( f, "<rect width=\"100%%\" height=\"100%%\" fill=\"#fcfcfb\"/>\n" );
+        fprintf( f, "<text x=\"8\" y=\"22\" font-family=\"sans-serif\" font-size=\"14\" fill=\"#0b0b0b\">"
                     "%s &#8211; %s: %d cells, utilization %.2f, wirelength %.1f um, "
                     "longest net %.1f um</text>\n",
                     pDesign, pTag, nCells, TotalArea / (W * H), HpwlSum,
                     nNets ? pNets[0].Hpwl : 0.0f );
-        fprintf( f, "<text x=\"8\" y=\"36\" font-family=\"sans-serif\" font-size=\"11\" fill=\"#666\">"
-                    "background: cell density per bin (white empty, red full); "
-                    "thin lines: %d longest nets</text>\n", nDrawNets );
+        fprintf( f, "<text x=\"8\" y=\"42\" font-family=\"sans-serif\" font-size=\"11\" fill=\"#52514e\">"
+                    "background: cell density per bin (blue, empty to full); "
+                    "boxes: standard cells (translucent); lines: %d longest nets</text>\n", nDrawNets );
+        if ( fCong )
+            fprintf( f, "<text x=\"8\" y=\"58\" font-family=\"sans-serif\" font-size=\"11\" fill=\"#898781\">"
+                        "routability map: %s.routability.svg, max congestion %.2f</text>\n",
+                        pTag, Cong.MaxCong );
+        if ( fPath )
+        {
+            fprintf( f, "<rect x=\"8\" y=\"65\" width=\"11\" height=\"11\" fill=\"#e0226e\" "
+                        "fill-opacity=\"0.22\" stroke=\"#c2185b\" stroke-width=\"0.7\"/>\n" );
+            fprintf( f, "<line x1=\"24\" y1=\"70.5\" x2=\"46\" y2=\"70.5\" stroke=\"#ffffff\" "
+                        "stroke-width=\"6\" stroke-linecap=\"round\"/>\n" );
+            fprintf( f, "<line x1=\"24\" y1=\"70.5\" x2=\"46\" y2=\"70.5\" stroke=\"#c2185b\" "
+                        "stroke-width=\"2.8\" stroke-linecap=\"round\"/>\n" );
+            fprintf( f, "<text x=\"52\" y=\"76\" font-family=\"sans-serif\" font-size=\"12\" "
+                        "fill=\"#c2185b\" font-weight=\"bold\">critical path: %d cells, %d objects, "
+                        "%.1f um of flight length, arrival %.1f ps (critical_path.csv)</text>\n",
+                        nPathCells, Vec_IntSize(pMan->vPathObjs), PathLen, pMan->PathDelay );
+        }
         /* density */
         fprintf( f, "<g id=\"density\">\n" );
         for ( k = 0; k < nBinsY; k++ )
@@ -631,21 +948,21 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
             float Ratio = pBinArea[k * nBinsX + i] / (BinW * BinH);
             if ( Ratio < 0.01f )
                 continue;
-            Phys_DumpColor( Ratio, Color );
+            Phys_DumpColorDensity( Ratio, Color );
             fprintf( f, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" fill=\"%s\"/>\n",
-                     MarginX + i * BinW * Scale, MarginY + (H - (k + 1) * BinH) * Scale,
+                     MarginX + i * BinW * Scale, TopY + (H - (k + 1) * BinH) * Scale,
                      BinW * Scale + 0.5f, BinH * Scale + 0.5f, Color );
         }
         fprintf( f, "</g>\n" );
         /* the row grid */
-        fprintf( f, "<g id=\"rows\" stroke=\"#c8c8c8\" stroke-width=\"0.5\">\n" );
+        fprintf( f, "<g id=\"rows\" stroke=\"#e1e0d9\" stroke-width=\"0.5\">\n" );
         for ( k = 0; k <= nRows; k++ )
             fprintf( f, "<line x1=\"%.2f\" y1=\"%.2f\" x2=\"%.2f\" y2=\"%.2f\"/>\n",
-                     MarginX, MarginY + (H - k * (float)pMan->SiteH / Dbu) * Scale,
-                     MarginX + W * Scale, MarginY + (H - k * (float)pMan->SiteH / Dbu) * Scale );
+                     MarginX, TopY + (H - k * (float)pMan->SiteH / Dbu) * Scale,
+                     MarginX + CoreW, TopY + (H - k * (float)pMan->SiteH / Dbu) * Scale );
         fprintf( f, "</g>\n" );
         /* the longest nets */
-        fprintf( f, "<g id=\"nets\" stroke=\"#1f4e79\" stroke-opacity=\"0.18\" stroke-width=\"1\">\n" );
+        fprintf( f, "<g id=\"nets\" stroke=\"#52514e\" stroke-opacity=\"0.16\" stroke-width=\"0.9\">\n" );
         for ( i = 0; i < nDrawNets; i++ )
         {
             float Dx, Dy;
@@ -657,13 +974,15 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
                 if ( !Phys_DumpObjPos( pMan, x, Dbu, &Sx, &Sy ) )
                     continue;
                 fprintf( f, "<line x1=\"%.2f\" y1=\"%.2f\" x2=\"%.2f\" y2=\"%.2f\"/>\n",
-                         MarginX + (Dx - X0) * Scale, MarginY + (Y0 + H - Dy) * Scale,
-                         MarginX + (Sx - X0) * Scale, MarginY + (Y0 + H - Sy) * Scale );
+                         MarginX + (Dx - X0) * Scale, TopY + (Y0 + H - Dy) * Scale,
+                         MarginX + (Sx - X0) * Scale, TopY + (Y0 + H - Sy) * Scale );
             }
         }
         fprintf( f, "</g>\n" );
-        /* the cells */
-        fprintf( f, "<g id=\"cells\" fill=\"#2f5597\" fill-opacity=\"0.75\">\n" );
+        /* the standard cells: light translucent boxes, so the density, the
+           nets and the critical path stay clearly above them */
+        fprintf( f, "<g id=\"cells\" fill=\"#52514e\" fill-opacity=\"0.10\" "
+                    "stroke=\"#0b0b0b\" stroke-opacity=\"0.40\" stroke-width=\"0.45\">\n" );
         for ( i = 0; i < nCells; i++ )
         {
             float Cw = (float)pCells[i].W / Dbu * Scale;
@@ -672,16 +991,76 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
             if ( Ch < 0.6f ) Ch = 0.6f;
             fprintf( f, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\"/>\n",
                      MarginX + (pCells[i].X0 - X0) * Scale,
-                     MarginY + (Y0 + H - pCells[i].Y0 - (float)pCells[i].H / Dbu) * Scale,
+                     TopY + (Y0 + H - pCells[i].Y0 - (float)pCells[i].H / Dbu) * Scale,
                      Cw, Ch );
         }
         fprintf( f, "</g>\n" );
+        /* the critical path.  The cells it crosses only get a light tint,
+           and are drawn first, so that the magenta line with its white
+           halo is what the eye follows; the halo keeps the line readable
+           over the density map, the cells and the nets. */
+        if ( fPath )
+        {
+            fprintf( f, "<g id=\"critcells\" fill=\"#e0226e\" fill-opacity=\"0.22\" "
+                        "stroke=\"#c2185b\" stroke-opacity=\"0.75\" stroke-width=\"0.7\">\n" );
+            for ( i = 0; i < nCells; i++ )
+            {
+                float Cw, Ch;
+                if ( !Vec_IntEntry(pMan->vObjPath, pCells[i].Obj) )
+                    continue;
+                Cw = (float)pCells[i].W / Dbu * Scale;
+                Ch = (float)pCells[i].H / Dbu * Scale;
+                if ( Cw < 0.6f ) Cw = 0.6f;
+                if ( Ch < 0.6f ) Ch = 0.6f;
+                fprintf( f, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\"/>\n",
+                         MarginX + (pCells[i].X0 - X0) * Scale,
+                         TopY + (Y0 + H - pCells[i].Y0 - (float)pCells[i].H / Dbu) * Scale,
+                         Cw, Ch );
+            }
+            fprintf( f, "</g>\n" );
+            fprintf( f, "<g id=\"critpath-halo\" stroke=\"#ffffff\" stroke-opacity=\"0.85\" "
+                        "stroke-width=\"6\" stroke-linecap=\"round\" fill=\"none\">\n" );
+            Phys_DumpPathEdges( f, pMan, Dbu, MarginX, TopY, X0, Y0, H, Scale );
+            fprintf( f, "</g>\n" );
+            fprintf( f, "<g id=\"critpath\" stroke=\"#c2185b\" stroke-opacity=\"0.95\" "
+                        "stroke-width=\"2.8\" stroke-linecap=\"round\" fill=\"none\">\n" );
+            Phys_DumpPathEdges( f, pMan, Dbu, MarginX, TopY, X0, Y0, H, Scale );
+            fprintf( f, "</g>\n" );
+        }
         fprintf( f, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" "
-                    "fill=\"none\" stroke=\"#222\" stroke-width=\"1\"/>\n",
-                 MarginX, MarginY, W * Scale, H * Scale );
+                    "fill=\"none\" stroke=\"#52514e\" stroke-width=\"1\"/>\n",
+                 MarginX, TopY, CoreW, CoreH );
+        /* density color bar */
+        BarX  = MarginX;
+        BarY  = TopY + CoreH + 16.0f;
+        BarW  = CoreW < 280.0f ? CoreW : 280.0f;
+        BarH  = 10.0f;
+        fprintf( f, "<text x=\"%.2f\" y=\"%.2f\" font-family=\"sans-serif\" font-size=\"10\" "
+                    "fill=\"#52514e\">cell density per bin (empty to full)</text>\n",
+                 BarX, BarY - 5.0f );
+        for ( s = 0; s < nSeg; s++ )
+        {
+            Phys_DumpColorDensity( (s + 0.5f) / (float)nSeg, Color );
+            fprintf( f, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" fill=\"%s\"/>\n",
+                     BarX + BarW * s / (float)nSeg, BarY,
+                     BarW / (float)nSeg + 0.3f, BarH, Color );
+        }
+        fprintf( f, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" "
+                    "fill=\"none\" stroke=\"#c3c2b7\" stroke-width=\"0.8\"/>\n",
+                 BarX, BarY, BarW, BarH );
+        fprintf( f, "<text x=\"%.2f\" y=\"%.2f\" font-family=\"sans-serif\" font-size=\"10\" "
+                    "fill=\"#52514e\">0</text>\n", BarX, BarY + BarH + 12.0f );
+        fprintf( f, "<text x=\"%.2f\" y=\"%.2f\" font-family=\"sans-serif\" font-size=\"10\" "
+                    "fill=\"#52514e\" text-anchor=\"middle\">0.5</text>\n",
+                 BarX + 0.5f * BarW, BarY + BarH + 12.0f );
+        fprintf( f, "<text x=\"%.2f\" y=\"%.2f\" font-family=\"sans-serif\" font-size=\"10\" "
+                    "fill=\"#52514e\" text-anchor=\"end\">1.0</text>\n",
+                 BarX + BarW, BarY + BarH + 12.0f );
         fprintf( f, "</svg>\n" );
         fclose( f );
     }
+    if ( fCong )
+        Phys_DumpCongWriteSvg( pRouteSvg, pDesign, pTag, &Cong );
     /* the log record */
     Now = time( NULL );
     pTm = localtime( &Now );
@@ -694,17 +1073,22 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
         if ( Size == 0 )
         {
             fprintf( f, "# physical-synthesis workspace log\n" );
-            fprintf( f, "# %-19s %-12s %-10s %6s %6s %10s %10s %9s %6s %5s %6s %10s\n",
+            fprintf( f, "# %-19s %-12s %-10s %6s %6s %10s %10s %9s %6s %5s %6s %10s %8s %7s\n",
                      "time", "tag", "design", "cells", "nets", "area_um2", "hpwl_um",
-                     "longest_net", "rows", "used", "maxocc", "tmax_ps" );
+                     "longest_net", "rows", "used", "maxocc", "tmax_ps", "maxcong", "over%" );
         }
         fprintf( f, "  %-19s %-12s %-10s %6d %6d %10.1f %10.1f %9.1f %6d %5d %6.2f",
                  TimeStr, pTag, pDesign, nCells, nNets, TotalArea, HpwlSum,
                  nNets ? pNets[0].Hpwl : 0.0f, nRows, nRowsUsed, MaxRowOcc );
         if ( pMan->fTimed )
-            fprintf( f, " %10.1f (period %.1f)\n", pMan->TMax, pMan->Period );
+            fprintf( f, " %10.1f (period %.1f)", pMan->TMax, pMan->Period );
         else
-            fprintf( f, " %10s\n", "-" );
+            fprintf( f, " %10s", "-" );
+        if ( fCong )
+            fprintf( f, " %8.2f %6.2f\n", Cong.MaxCong,
+                     100.0f * (float)Cong.nOverflow / (float)(Cong.nX * Cong.nY) );
+        else
+            fprintf( f, " %8s %6s\n", "-", "-" );
         fclose( f );
     }
     /* the snapshot list and the index */
@@ -722,8 +1106,14 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
     }
     Phys_DumpFreeLines( vDesigns );
     if ( pPars->fVerbose )
+    {
         fprintf( stdout, "Dump: %s/%s: %d cells, %d nets, %d rows, max row occupancy %.2f, "
-                 "wirelength %.1f um.\n", pDesign, pTag, nCells, nNets, nRows, MaxRowOcc, HpwlSum );
+                 "wirelength %.1f um", pDesign, pTag, nCells, nNets, nRows, MaxRowOcc, HpwlSum );
+        if ( fCong )
+            fprintf( stdout, ", max congestion %.2f (%d bins over capacity)",
+                     Cong.MaxCong, Cong.nOverflow );
+        fprintf( stdout, ".\n" );
+    }
     fprintf( stdout, "Dump: wrote workspace \"%s/%s\" (%d cells, %d nets, %.1f um wirelength%s).\n",
              pDir, pDesign, nCells, nNets, HpwlSum, pMan->fTimed ? ", with timing" : "" );
     /* cleanup */
@@ -741,7 +1131,9 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
     ABC_FREE( pRowCells );
     ABC_FREE( pDir ); ABC_FREE( pDesign ); ABC_FREE( pTag ); ABC_FREE( pDesignDir );
     ABC_FREE( pCellsFile ); ABC_FREE( pNetsFile ); ABC_FREE( pDensity );
-    ABC_FREE( pRows ); ABC_FREE( pSvg ); ABC_FREE( pLog ); ABC_FREE( pSnapsFile );
+    ABC_FREE( pCongFile ); ABC_FREE( pRows ); ABC_FREE( pSvg ); ABC_FREE( pRouteSvg );
+    ABC_FREE( pPathFile );
+    ABC_FREE( pLog ); ABC_FREE( pSnapsFile );
     return 1;
 }
 

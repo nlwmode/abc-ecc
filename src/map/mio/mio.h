@@ -200,6 +200,8 @@ extern Mio_Gate_t **     Mio_CollectRoots( Mio_Library_t * pLib, int nInputs, fl
 extern Mio_Cell_t *      Mio_CollectRootsNew( Mio_Library_t * pLib, int nInputs, int * pnGates, int fVerbose );
 extern Mio_Cell_t *      Mio_CollectRootsNewDefault( int nInputs, int * pnGates, int fVerbose );
 extern Mio_Cell2_t *     Mio_CollectRootsNewDefault2( int nInputs, int * pnGates, int fVerbose );
+extern Mio_Cell2_t *     Mio_CollectAllNew2( Mio_Library_t * pLib, int nInputs, int * pnGates, int fVerbose );
+extern Mio_Cell2_t *     Mio_CollectAllNewDefault2( int nInputs, int * pnGates, int fVerbose );
 extern int               Mio_CollectRootsNewDefault3( int nInputs, Vec_Ptr_t ** pvNames, Vec_Wrd_t ** pvTruths );
 extern word              Mio_DeriveTruthTable6( Mio_Gate_t * pGate );
 extern void              Mio_DeriveTruthTable( Mio_Gate_t * pGate, unsigned uTruthsIn[][2], int nSigns, int nInputs, unsigned uTruthRes[] );
@@ -221,8 +223,9 @@ extern void              Mio_LibraryCleanProfile2( Mio_Library_t * pLib );
 extern void              Mio_LibraryShortNames( Mio_Library_t * pLib );
 
 extern void              Mio_LibraryMatchesStop( Mio_Library_t * pLib );
-extern void              Mio_LibraryMatchesStart( Mio_Library_t * pLib, int fPinFilter, int fPinPerm, int fPinQuick );
-extern void              Mio_LibraryMatchesFetch( Mio_Library_t * pLib, Vec_Mem_t ** pvTtMem, Vec_Wec_t ** pvTt2Match, Mio_Cell2_t ** ppCells, int * pnCells, int fPinFilter, int fPinPerm, int fPinQuick );
+extern void              Mio_LibraryMatchesStart( Mio_Library_t * pLib, int fPinFilter, int fPinPerm, int fPinQuick, int fAllGates );
+extern void              Mio_LibraryMatchesFetch( Mio_Library_t * pLib, Vec_Mem_t ** pvTtMem, Vec_Wec_t ** pvTt2Match, Mio_Cell2_t ** ppCells, int * pnCells, int fPinFilter, int fPinPerm, int fPinQuick, int fAllGates );
+extern void              Mio_LibraryMatchesFetchDefault2( Vec_Mem_t ** pvTtMem, Vec_Wec_t ** pvTt2Match, Mio_Cell2_t ** ppCells, int * pnCells, int fPinFilter, int fPinPerm, int fPinQuick, int fAllGates );
 
 extern void              Mio_LibraryMatches2Stop( Mio_Library_t * pLib );
 extern void              Mio_LibraryMatches2Start( Mio_Library_t * pLib );

@@ -18,13 +18,15 @@
 #include "phys/lib/physLef.h"
 #include "phys/lib/physLiberty.h"
 #include "phys/place/physPlace.h"
+#include "phys/place/physCong.h"
 
 ABC_NAMESPACE_IMPL_START
 
 
 typedef struct Phys_PNode_t_
 {
-    int   Obj;       /* Gia object id                              */
+    int   Lit;       /* output literal of the cell, or of the PI/PO */
+    int   Kind;      /* 0 = cell, 1 = primary input, 2 = output     */
     int   Fixed;     /* PIs and POs are fixed                      */
     int   W, H;      /* size in DBU                                */
     float X, Y;      /* center in DBU                              */
@@ -46,6 +48,7 @@ void Phys_PlaceSetDefault( Phys_PlacePars_t * p )
     p->nIterCG      = 300;
     p->nIterNest    = 400;
     p->StopOverflow = 0.10f;
+    p->nCongBins    = 64;
     p->fVerbose     = 0;
 }
 
@@ -91,6 +94,13 @@ void Phys_PlaceCellSizeObj( Phys_Man_t * p, int iObj, int * pw, int * ph )
         return;
     pCell = (Phys_LibCell_t *)Vec_PtrEntry( p->vObjToCell, iObj );
     if ( pCell != NULL )
+        Phys_PlaceCellSize( p, pCell, pw, ph );
+}
+
+void Phys_PlaceCellSizeCell( Phys_Man_t * p, Phys_LibCell_t * pCell, int * pw, int * ph )
+{
+    *pw = *ph = 0;
+    if ( p != NULL && pCell != NULL )
         Phys_PlaceCellSize( p, pCell, pw, ph );
 }
 
@@ -1186,7 +1196,9 @@ static void Phys_PlaceNesterov( Phys_Man_t * p, Phys_PNode_t * pNodes, int nNode
     double * pAX, * pAY;
     double Gamma0, GammaEnd, Gamma, Lambda, NormWL, NormD, MaxGrad, MaxDim;
     double Step, Alpha, A, MaxMove, Overflow, MaxDens, Wl, BestOverflow;
+    double * pBx, * pBy, BestScore = 0.0, SnapWl = 0.0, SnapOvfl = 0.0, SnapDens = 0.0;
     int k, it, itGlobal, Stage, nStage, nInner, nTot, iNode, fStop, fConverged, fLambdaChanged;
+    int fBest = 0, fLastWasBest = 0;
 
     Phys_PlaceBinsInit( b, p, x0, y0, W, H, (double)pPars->Util, TotalArea );
     pX  = ABC_ALLOC( double, nFree );
@@ -1201,6 +1213,8 @@ static void Phys_PlaceNesterov( Phys_Man_t * p, Phys_PNode_t * pNodes, int nNode
     pDy = ABC_ALLOC( double, nFree );
     pAX = ABC_ALLOC( double, nNodes );
     pAY = ABC_ALLOC( double, nNodes );
+    pBx = ABC_ALLOC( double, nFree );
+    pBy = ABC_ALLOC( double, nFree );
     for ( k = 0; k < nNodes; k++ )
         if ( pNodes[k].Fixed )
         {
@@ -1375,6 +1389,28 @@ static void Phys_PlaceNesterov( Phys_Man_t * p, Phys_PNode_t * pNodes, int nNode
             Gamma = Phys_PlaceGamma( Gamma0, GammaEnd, itGlobal, nTot );
             Wl = Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, nNets,
                                  pAX, pAY, pX, pY, Gamma, Lambda, pGx, pGy, &Overflow, &MaxDens );
+            /* remember the iterate that best balances wirelength and density:
+               once the density weight has grown past what the bin model can
+               satisfy, the remaining stages trade wirelength for no reduction
+               of the overflow, and the last iterate is then much longer than
+               one seen a few stages earlier.  The overflow is weighted by the
+               spread it is supposed to buy, so a slightly longer but much
+               better spread layout still wins. */
+            {
+                double Score = Wl * (1.0 + 4.0 * Overflow);
+                fLastWasBest = 0;
+                if ( !fBest || Score < BestScore )
+                {
+                    fBest = 1;
+                    fLastWasBest = 1;
+                    BestScore = Score;
+                    SnapWl  = Wl;
+                    SnapOvfl = Overflow;
+                    SnapDens = MaxDens;
+                    memcpy( pBx, pX, sizeof(double)*nFree );
+                    memcpy( pBy, pY, sizeof(double)*nFree );
+                }
+            }
             if ( pPars->fVerbose )
                 fprintf( stdout, "Placement: iter %4d (stage %2d): gamma %.3f um, lambda %.3g, "
                          "overflow %.4f, max density %.3f, lse wirelength %.1f um, "
@@ -1422,6 +1458,21 @@ static void Phys_PlaceNesterov( Phys_Man_t * p, Phys_PNode_t * pNodes, int nNode
         if ( fConverged && Overflow < pPars->StopOverflow )
             fStop = 1;
     }
+    /* return the best iterate rather than the last one: the density weight of
+       the last stages can overshoot, and its iterate is then longer than one
+       already seen */
+    if ( fBest && !fLastWasBest )
+    {
+        memcpy( pX, pBx, sizeof(double)*nFree );
+        memcpy( pY, pBy, sizeof(double)*nFree );
+        if ( pPars->fVerbose )
+            fprintf( stdout, "Placement: restoring the best iterate: lse wirelength %.1f um, "
+                     "overflow %.3f, max density %.3f (the last iterate had %.1f um, overflow %.3f).\n",
+                     SnapWl / Dbu, SnapOvfl, SnapDens, Wl / Dbu, Overflow );
+        Wl = SnapWl;
+        Overflow = SnapOvfl;
+        MaxDens = SnapDens;
+    }
     for ( k = 0; k < nFree; k++ )
     {
         iNode = Vec_IntEntry( vFree, k );
@@ -1436,6 +1487,7 @@ static void Phys_PlaceNesterov( Phys_Man_t * p, Phys_PNode_t * pNodes, int nNode
     ABC_FREE( pGx ); ABC_FREE( pGy );
     ABC_FREE( pDx ); ABC_FREE( pDy );
     ABC_FREE( pAX ); ABC_FREE( pAY );
+    ABC_FREE( pBx ); ABC_FREE( pBy );
     Phys_PlaceBinsFree( b );
 }
 
@@ -1459,7 +1511,7 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     Vec_Flt_t * vEW, * vDiag, * vBx, * vBy, * vSolX, * vSolY, * vRefX, * vRefY;
     double TotalArea = 0.0;
     float x0, y0, W, H, Dbu, Anchor, AvgDiag;
-    int i, k, q, nNodes = 0, nFree = 0, nEdges = 0, nOverlaps;
+    int i, k, q, nLits, nNodes = 0, nFree = 0, nEdges = 0, nOverlaps;
     unsigned Seed = 12345;
     if ( p == NULL || pGia == NULL || pPars == NULL )
         return 0;
@@ -1492,21 +1544,38 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         fprintf( stdout, "Placement: no LEF data; using default site and RC assumptions.\n" );
     Phys_PlaceSite( p );
     Dbu = (float)(p->pLef ? p->pLef->Units.Dbu : 1000);
-    pNodes    = ABC_CALLOC( Phys_PNode_t, nObjs );
-    vNode2Idx = Vec_IntStartFull( nObjs );
+    nLits = Phys_ManLitNum( p );
+    if ( nLits != 2 * nObjs )
+    {
+        fprintf( stdout, "Placement: the literal cell view has %d entries for %d objects; "
+                         "run \"&phys_bind\" first.\n", nLits, nObjs );
+        return 0;
+    }
+    pNodes    = ABC_CALLOC( Phys_PNode_t, nLits );
+    vNode2Idx = Vec_IntStartFull( nLits );
     vFreeIdx  = Vec_IntAlloc( 1024 );
     vFree     = Vec_IntAlloc( 1024 );
-    vSinks    = Vec_PtrStart( nObjs );
-    /* create nodes */
-    for ( i = 1; i < nObjs; i++ )
+    vSinks    = Vec_PtrStart( nLits );
+    /* one movable node per cell instance, plus a fixed node per PI and PO;
+       an inverter or a second phase cell at the same Gia object is its own
+       node, so the placer sees the netlist the mapper produced */
+    for ( i = 0; i < nLits; i++ )
     {
-        Phys_LibCell_t * pCell = (Phys_LibCell_t *)Vec_PtrEntry( p->vObjToCell, i );
+        Gia_Obj_t * pObj = Gia_ManObj( pGia, Abc_Lit2Var(i) );
+        Phys_LibCell_t * pCell = Phys_ManLitCell( p, i );
         Phys_PNode_t * pNode = pNodes + nNodes;
-        if ( pCell == NULL && !Gia_ObjIsPi(pGia, Gia_ManObj(pGia, i)) &&
-                              !Gia_ObjIsPo(pGia, Gia_ManObj(pGia, i)) )
-            continue;
-        pNode->Obj = i;
+        int Kind;
         if ( pCell != NULL )
+            Kind = 0;
+        else if ( (i & 1) == 0 && Gia_ObjIsPi(pGia, pObj) )
+            Kind = 1;
+        else if ( (i & 1) == 0 && Gia_ObjIsPo(pGia, pObj) )
+            Kind = 2;
+        else
+            continue;
+        pNode->Lit  = i;
+        pNode->Kind = Kind;
+        if ( Kind == 0 )
         {
             Phys_PlaceCellSize( p, pCell, &pNode->W, &pNode->H );
             pNode->Fixed = 0;
@@ -1550,67 +1619,66 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         x0 = 0.0f;
         y0 = 0.0f;
     }
+    /* the placement is deterministic for a given netlist: the random seed
+       is fixed, so two feedback rounds on the same mapping produce the same
+       coordinates and the loop reaches a fixed point instead of drifting */
     /* initial positions */
     for ( i = 0; i < nNodes; i++ )
     {
         Phys_PNode_t * pNode = pNodes + i;
         if ( pNode->Fixed )
             continue;
-        pNode->X = x0 + 0.5f*pNode->W + Phys_PlaceRand(&Seed) * (W - pNode->W);
-        pNode->Y = y0 + 0.5f*pNode->H + Phys_PlaceRand(&Seed) * (H - pNode->H);
+        {
+            pNode->X = x0 + 0.5f*pNode->W + Phys_PlaceRand(&Seed) * (W - pNode->W);
+            pNode->Y = y0 + 0.5f*pNode->H + Phys_PlaceRand(&Seed) * (H - pNode->H);
+        }
     }
     /* PIs on the left, POs on the right */
     {
         int nPi = 0, nPo = 0, nPiTot = 0, nPoTot = 0;
         for ( i = 0; i < nNodes; i++ )
         {
-            if ( Gia_ObjIsPi(pGia, Gia_ManObj(pGia, pNodes[i].Obj)) ) nPiTot++;
-            if ( Gia_ObjIsPo(pGia, Gia_ManObj(pGia, pNodes[i].Obj)) ) nPoTot++;
+            if ( pNodes[i].Kind == 1 ) nPiTot++;
+            if ( pNodes[i].Kind == 2 ) nPoTot++;
         }
         for ( i = 0; i < nNodes; i++ )
         {
             Phys_PNode_t * pNode = pNodes + i;
-            if ( Gia_ObjIsPi(pGia, Gia_ManObj(pGia, pNode->Obj)) )
+            if ( pNode->Kind == 1 )
                 pNode->X = x0, pNode->Y = y0 + H * (0.5f + nPi++) / (nPiTot + 1);
-            else if ( Gia_ObjIsPo(pGia, Gia_ManObj(pGia, pNode->Obj)) )
+            else if ( pNode->Kind == 2 )
                 pNode->X = x0 + W, pNode->Y = y0 + H * (0.5f + nPo++) / (nPoTot + 1);
         }
     }
-    /* collect nets: vSinks[d] lists the sink nodes driven by object d */
+    /* collect nets: vSinks[d] lists the sink nodes driven by literal d */
     for ( i = 0; i < nNodes; i++ )
     {
-        int iObj = pNodes[i].Obj;
-        Gia_Obj_t * pObj = Gia_ManObj( pGia, iObj );
-        if ( Gia_ObjIsPo(pGia, pObj) )
+        Vec_Int_t * vList;
+        int d = -1;
+        if ( pNodes[i].Kind == 2 )
+            d = Phys_ManDriverLit( p, pGia,
+                    Gia_ObjFaninLit0p( pGia, Gia_ManObj(pGia, Abc_Lit2Var(pNodes[i].Lit)) ) );
+        else if ( pNodes[i].Kind == 0 )
         {
-            int d = Abc_Lit2Var( Gia_ObjFaninLit0(pObj, iObj) );
-            Vec_Int_t * vList;
-            if ( d <= 0 || Vec_IntEntry(vNode2Idx, d) < 0 )
-                continue;
-            vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, d );
-            if ( vList == NULL )
-                Vec_PtrWriteEntry( vSinks, d, vList = Vec_IntAlloc(4) );
-            Vec_IntPush( vList, i );
-            continue;
-        }
-        if ( Vec_PtrEntry(p->vObjToCell, iObj) == NULL )
-            continue;
-        {
-            int iLit = Vec_IntEntry( p->vObjCellLit, iObj );
-            if ( iLit < 0 )
-                continue;
-            for ( k = 0; k < Gia_ObjCellSize(pGia, iLit); k++ )
+            int nFans = Phys_ManLitFaninNum( p, pGia, pNodes[i].Lit );
+            for ( k = 0; k < nFans; k++ )
             {
-                int d = Abc_Lit2Var( Gia_ObjCellFanin(pGia, iLit, k) );
-                Vec_Int_t * vList;
-                if ( d <= 0 || Vec_IntEntry(vNode2Idx, d) < 0 )
+                d = Phys_ManLitFaninLit( p, pGia, pNodes[i].Lit, k );
+                if ( d <= 1 || d >= nLits || Vec_IntEntry(vNode2Idx, d) < 0 )
                     continue;
                 vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, d );
                 if ( vList == NULL )
                     Vec_PtrWriteEntry( vSinks, d, vList = Vec_IntAlloc(4) );
                 Vec_IntPush( vList, i );
             }
+            continue;
         }
+        if ( d <= 1 || d >= nLits || Vec_IntEntry(vNode2Idx, d) < 0 )
+            continue;
+        vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, d );
+        if ( vList == NULL )
+            Vec_PtrWriteEntry( vSinks, d, vList = Vec_IntAlloc(4) );
+        Vec_IntPush( vList, i );
     }
     /* build the quadratic system over free nodes */
     vEI = Vec_IntAlloc( 1024 );
@@ -1621,7 +1689,7 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     vBy   = Vec_FltStart( nFree );
     {
         Vec_Int_t * vPinIdx = Vec_IntAlloc( 16 );
-        for ( q = 0; q < nObjs; q++ )
+        for ( q = 0; q < nLits; q++ )
         {
             Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
             int iDriver, nPins, a, b;
@@ -1684,14 +1752,15 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     }
     for ( k = 0; k < nFree; k++ )
     {
-        Vec_FltWriteEntry( vRefX, k, x0 + 0.5f * W );
-        Vec_FltWriteEntry( vRefY, k, y0 + 0.5f * H );
+        float rx = x0 + 0.5f * W, ry = y0 + 0.5f * H;
+        Vec_FltWriteEntry( vRefX, k, rx );
+        Vec_FltWriteEntry( vRefY, k, ry );
     }
     if ( pPars->fVerbose )
         fprintf( stdout, "Placement: %d nodes (%d free), %d quadratic edges, core %.1f x %.1f um.\n",
                  nNodes, nFree, nEdges, W / Dbu, H / Dbu );
     if ( pPars->fVerbose )
-        Phys_PlaceReport( "random init:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nObjs, Dbu );
+        Phys_PlaceReport( "random init:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nLits, Dbu );
     Phys_PlaceSolve( nFree, vDiag, vEI, vEJ, vEW, vBx, vRefX, Anchor, vSolX, pPars->nIterCG );
     Phys_PlaceSolve( nFree, vDiag, vEI, vEJ, vEW, vBy, vRefY, Anchor, vSolY, pPars->nIterCG );
     Vec_IntForEachEntry( vFree, i, k )
@@ -1700,20 +1769,20 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         pNodes[i].Y = Vec_FltEntry( vSolY, k );
     }
     if ( pPars->fVerbose )
-        Phys_PlaceReport( "after CG:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nObjs, Dbu );
+        Phys_PlaceReport( "after CG:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nLits, Dbu );
     Phys_PlaceScale( pNodes, vFree, vSolX, vSolY, x0, y0, W, H, TotalArea, pPars->Util );
     if ( pPars->fVerbose )
-        Phys_PlaceReport( "after scale:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nObjs, Dbu );
+        Phys_PlaceReport( "after scale:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nLits, Dbu );
     /* Build the CSR net list of the nonlinear placement.  The driver of
        every net comes first, followed by its sinks; the pins index into
        the node array, so the fixed terminals are addressed the same way
        as the movable cells. */
     {
-        Vec_Int_t * vNetStart = Vec_IntAlloc( nObjs + 1 );
-        Vec_Int_t * vNetPins  = Vec_IntAlloc( 4 * nObjs + 16 );
+        Vec_Int_t * vNetStart = Vec_IntAlloc( nLits + 1 );
+        Vec_Int_t * vNetPins  = Vec_IntAlloc( 4 * nLits + 16 );
         double Overflow = 0.0, MaxDens = 0.0;
         Vec_IntPush( vNetStart, 0 );
-        for ( q = 0; q < nObjs; q++ )
+        for ( q = 0; q < nLits; q++ )
         {
             Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
             int iDriver;
@@ -1737,19 +1806,31 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         Vec_IntFree( vNetPins );
     }
     if ( pPars->fVerbose )
-        Phys_PlaceReport( "after nonlinear:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nObjs, Dbu );
+        Phys_PlaceReport( "after nonlinear:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nLits, Dbu );
     /* Legalize the spread solution. */
     nOverlaps = Phys_PlaceLegalize( p, pNodes, vFree, x0, y0, W, H, pPars->fVerbose );
     if ( pPars->fVerbose )
-        Phys_PlaceReport( "after legal:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nObjs, Dbu );
+        Phys_PlaceReport( "after legal:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nLits, Dbu );
     /* save the result */
     Phys_ManClearPlace( p );
     p->vObjX = Vec_IntStartFull( nObjs );
     p->vObjY = Vec_IntStartFull( nObjs );
+    p->vLitX = Vec_IntStartFull( nLits );
+    p->vLitY = Vec_IntStartFull( nLits );
     for ( i = 0; i < nNodes; i++ )
     {
-        Vec_IntWriteEntry( p->vObjX, pNodes[i].Obj, (int)(pNodes[i].X + 0.5f) );
-        Vec_IntWriteEntry( p->vObjY, pNodes[i].Obj, (int)(pNodes[i].Y + 0.5f) );
+        int sx = (int)(pNodes[i].X + 0.5f);
+        int sy = (int)(pNodes[i].Y + 0.5f);
+        int iObj = Abc_Lit2Var( pNodes[i].Lit );
+        Vec_IntWriteEntry( p->vLitX, pNodes[i].Lit, sx );
+        Vec_IntWriteEntry( p->vLitY, pNodes[i].Lit, sy );
+        /* the object-level coordinate is the one of the positive phase,
+           which the mapper and the dump read */
+        if ( Vec_IntEntry( p->vObjX, iObj ) < 0 )
+        {
+            Vec_IntWriteEntry( p->vObjX, iObj, sx );
+            Vec_IntWriteEntry( p->vObjY, iObj, sy );
+        }
     }
     p->CoreX0  = 0;
     p->CoreY0  = 0;
@@ -1758,19 +1839,35 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     p->fPlaced = 1;
     Phys_ManClearTiming( p );
     /* total half-perimeter wirelength of the placed netlist */
-    p->Hpwl = (float)( Phys_PlaceHpwl( pNodes, vNode2Idx, vSinks, nObjs ) / Dbu );
+    p->Hpwl = (float)( Phys_PlaceHpwl( pNodes, vNode2Idx, vSinks, nLits ) / Dbu );
+    /* routing congestion of the legal placement; &phys_dump and &phys_map
+       both read this map */
+    {
+        Phys_Cong_t * pCong = Phys_CongBuild( p, pGia, pPars->nCongBins );
+        if ( pPars->fVerbose )
+        {
+            if ( pCong != NULL )
+                fprintf( stdout, "Placement: congestion %dx%d bins, max %.2f, "
+                         "%d overflow bins, %.1f um of wire demand.\n",
+                         pCong->nX, pCong->nY, pCong->MaxCong,
+                         pCong->nOverflow, pCong->TotalDemand );
+            else
+                fprintf( stdout, "Placement: congestion map is not available.\n" );
+        }
+    }
     if ( pPars->fVerbose )
         fprintf( stdout, "Placement: %d cells placed, %d overlaps remain, utilization %.2f, "
-                 "%d/%d rows used, max row occupancy %.2f, wirelength %.1f um.\n",
+                 "%d/%d rows used, max row occupancy %.2f, wirelength %.1f um, cell area %.1f um^2.\n",
                  nFree, nOverlaps, TotalArea / ((double)W * (double)H),
                  Phys_PlaceRowsUsed( pNodes, vFree, y0, H, p->SiteH ),
                  (int)(H / p->SiteH),
-                 Phys_PlaceMaxRowOcc( pNodes, vFree, y0, H, p->SiteH, W ), p->Hpwl );
+                 Phys_PlaceMaxRowOcc( pNodes, vFree, y0, H, p->SiteH, W ), p->Hpwl,
+                 TotalArea / ((double)Dbu * (double)Dbu) );
     ABC_FREE( pNodes );
     Vec_IntFree( vNode2Idx );
     Vec_IntFree( vFreeIdx );
     Vec_IntFree( vFree );
-    for ( q = 0; q < nObjs; q++ )
+    for ( q = 0; q < nLits; q++ )
         if ( Vec_PtrEntry(vSinks, q) != NULL )
             Vec_IntFree( (Vec_Int_t *)Vec_PtrEntry(vSinks, q) );
     Vec_PtrFree( vSinks );

@@ -137,6 +137,11 @@ struct Gia_Man_t_
     Vec_Wec_t *    vMapping2;     // mapping for each node
     Vec_Wec_t *    vFanouts2;     // mapping fanouts 
     Vec_Int_t *    vCellMapping;  // mapping for each node
+    Vec_Ptr_t *    vCellNames;    // cell names for vCellMapping, when the
+                                  // ids are not root-gate ids (all-gates
+                                  // matching); NULL for a normal mapping
+    int            CellMatchPars[4]; // fPinFilter/fPinPerm/fPinQuick/fAllGates
+                                     // used to build vCellMapping
     void *         pSatlutWinman; // windowing for SAT-based mapping
     Vec_Int_t *    vPacking;      // packing information
     Vec_Int_t *    vConfigs;      // cell configurations
@@ -333,7 +338,33 @@ struct Gia_ManSim_t_
     unsigned *     pDataSimCos;  // simulation data for COs
 };
 
-typedef struct Jf_Par_t_ Jf_Par_t; 
+/* Physical data consumed by the cut ranking of the technology mapper.
+   The arrays are indexed by Gia object id and have nObjs entries.  The
+   mapper never owns them: the caller (see &phys_map and src/phys/map)
+   keeps them alive while Nf_ManPerformMapping() runs.  The ranking keys
+   are computed from these arrays (critical-path timing from pArr/pReq,
+   congestion from pCong, routability from pRout, wire delay from the
+   coordinates and the unit RC), so a NULL pointer makes the corresponding
+   key vanish; that is what the legacy (-l) mode relies on. */
+typedef struct Jf_Phys_t_ Jf_Phys_t;
+struct Jf_Phys_t_
+{
+    int            fEnable;     // 1 = physical ranking is on
+    int            fCong;       // 1 = use the congestion/routability terms
+    int            nObjs;       // size of the per-object arrays
+    float *        pX;          // x coordinate, um
+    float *        pY;          // y coordinate, um
+    float *        pCong;       // bin demand/supply
+    float *        pRout;       // min(1, supply/demand)
+    float *        pArr;        // arrival time, ps (may be NULL)
+    float *        pReq;        // required arrival, ps; +INF when absent
+    float *        pCrit;       // criticality in [0,1]
+    float *        pNetCap;     // total capacitance seen by the driver, pF
+    float          RcR;         // wire resistance, ohm/um
+    float          RcC;         // wire capacitance, pF/um
+};
+
+typedef struct Jf_Par_t_ Jf_Par_t;
 struct Jf_Par_t_
 {
     int            nLutSize;
@@ -393,10 +424,12 @@ struct Jf_Par_t_
     float          Epsilon;
     float *        pTimesArr;
     float *        pTimesReq;
-    float *        pPhysX;          // physical x coordinates per object (optional)
-    float *        pPhysY;          // physical y coordinates per object (optional)
-    float          PhysFlowW;       // area-flow cost of the cut bbox, gate areas per um
-    float          PhysDelayW;      // delay cost of the cut bbox, ps per um
+    float *        pPhysX;          // legacy physical x coordinates (unused)
+    float *        pPhysY;          // legacy physical y coordinates (unused)
+    float          PhysFlowW;       // legacy: area-flow cost per um
+    float          PhysDelayW;      // legacy: delay cost per um
+    Jf_Phys_t *    pPhys;           // physical ranking data; NULL = exact &nf
+    int            fAllGates;       // 1 = matching uses all drive strengths
     char *         ZFile;
 };
 
