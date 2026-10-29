@@ -31,6 +31,7 @@
 #include "phys/physMan.h"
 #include "phys/lib/physLef.h"
 #include "phys/lib/physLiberty.h"
+#include "phys/lib/physSteiner.h"
 #include "phys/sta/physSta.h"
 
 ABC_NAMESPACE_IMPL_START
@@ -53,6 +54,7 @@ void Phys_StaSetDefault( Phys_StaPars_t * p )
     p->pLayer    = NULL;
     p->WireRes   = 0.0f;
     p->WireCap   = 0.0f;
+    p->fSteiner  = 1;
     p->fVerbose  = 0;
 }
 
@@ -122,94 +124,102 @@ float Phys_StaWireDelay( Phys_Man_t * p, float x0, float y0, float x1, float y1,
   Description [pX/pY hold the placed pin centers in microns.  Entry zero is
                the driver; entries 1..nPins-1 are the sinks, and pCap holds
                the input capacitance of every sink.  The pins are joined by
-               a rectilinear minimum spanning tree computed by Prim's
-               algorithm and rooted at the driver.  pDelay receives the
-               Elmore delay of every pin and the total net capacitance and
-               the total wire length are returned in pTotalCap/pTotalLen.]
+               a rectilinear Steiner tree (a plain minimum spanning tree
+               when fSteiner is zero) rooted at the driver, and the Elmore
+               delay of every sink is accumulated on that tree.  pDelay
+               receives the delay of every pin and the total net
+               capacitance and wire length are returned in
+               pTotalCap/pTotalLen; pnSteiner reports the Steiner points
+               the tree added.]
 
   SideEffects []
 
 ***********************************************************************/
 static void Phys_StaElmoreNet( float * pX, float * pY, float * pCap, int nPins,
-                               float RcR, float RcC, float * pDelay,
-                               float * pTotalCap, float * pTotalLen )
+                               float RcR, float RcC, int fSteiner, float * pDelay,
+                               float * pTotalCap, float * pTotalLen, int * pnSteiner,
+                               int * pnRun, int * pnRejected )
 {
-    float * pBest, * pLen, * pSub;
-    int * pParent, * pOrder;
-    int nAdded, i, j, iBest;
+    Phys_Stree_t * pTree;
+    float * pSub, * pDelNode;
+    int * pCount, * pStart, * pChild, * pOrder;
+    int nNodes, i, v, nOrder;
     *pTotalCap = 0.0f;
     *pTotalLen = 0.0f;
+    *pnSteiner = 0;
+    *pnRun = 0;
+    *pnRejected = 0;
     if ( nPins <= 1 )
     {
         if ( nPins == 1 )
             pDelay[0] = 0.0f;
         return;
     }
-    pParent = ABC_ALLOC( int, nPins );
-    pOrder  = ABC_ALLOC( int, nPins );
-    pBest   = ABC_ALLOC( float, nPins );
-    pLen    = ABC_CALLOC( float, nPins );
-    pSub    = ABC_CALLOC( float, nPins );
-    /* Prim's algorithm from the driver; the parent pointers form the
-       tree rooted at the driver */
-    for ( i = 1; i < nPins; i++ )
-    {
-        pParent[i] = 0;
-        pBest[i]   = Phys_StaManhattan( pX[0], pY[0], pX[i], pY[i] );
-    }
-    pBest[0] = -1.0f;
-    pOrder[0] = 0;
-    nAdded = 1;
-    while ( nAdded < nPins )
-    {
-        iBest = -1;
-        for ( j = 1; j < nPins; j++ )
-            if ( pBest[j] >= 0.0f && (iBest < 0 || pBest[j] < pBest[iBest]) )
-                iBest = j;
-        if ( iBest < 0 )
-            break;
-        pLen[iBest]  = pBest[iBest];
-        pBest[iBest] = -1.0f;
-        pOrder[nAdded++] = iBest;
-        for ( j = 1; j < nPins; j++ )
-            if ( pBest[j] >= 0.0f )
-            {
-                float Dist = Phys_StaManhattan( pX[iBest], pY[iBest], pX[j], pY[j] );
-                if ( Dist < pBest[j] )
-                {
-                    pBest[j]   = Dist;
-                    pParent[j] = iBest;
-                }
-            }
-    }
+    pTree = Phys_StreeBuild( pX, pY, nPins, fSteiner );
+    if ( pTree == NULL )
+        return;
+    nNodes   = pTree->nNodes;
+    pSub     = ABC_CALLOC( float, nNodes );
+    pDelNode = ABC_CALLOC( float, nNodes );
+    pCount   = ABC_CALLOC( int, nNodes );
+    pStart   = ABC_CALLOC( int, nNodes + 1 );
+    pOrder   = ABC_ALLOC( int, nNodes );
+    pChild   = ABC_ALLOC( int, nNodes > 1 ? nNodes : 1 );
     /* the capacitance hanging below every node: its own pin plus the
        complete subtrees of its children, wire capacitance included */
-    for ( i = 0; i < nPins; i++ )
-        pSub[i] = pCap[i];
-    for ( i = nAdded - 1; i > 0; i-- )
+    for ( i = 0; i < pTree->nTerms; i++ )
+        pSub[pTree->pTermNode[i]] += pCap[i];
+    for ( v = 1; v < nNodes; v++ )
+        pCount[pTree->pParent[v]]++;
+    for ( v = 0; v < nNodes; v++ )
+        pStart[v+1] = pStart[v] + pCount[v];
+    for ( v = 0; v < nNodes; v++ )
+        pCount[v] = pStart[v];
+    for ( v = 1; v < nNodes; v++ )
     {
-        int v = pOrder[i];
-        pSub[pParent[v]] += pSub[v] + RcC * pLen[v];
+        int par = pTree->pParent[v];
+        pChild[pCount[par]++] = v;
+    }
+    /* breadth-first order from the driver, then the accumulations */
+    pOrder[0] = 0;
+    nOrder = 1;
+    for ( i = 0; i < nOrder; i++ )
+    {
+        int u = pOrder[i], j;
+        for ( j = pStart[u]; j < pStart[u+1]; j++ )
+            pOrder[nOrder++] = pChild[j];
+    }
+    assert( nOrder == nNodes );
+    for ( i = nOrder - 1; i > 0; i-- )
+    {
+        v = pOrder[i];
+        pSub[pTree->pParent[v]] += pSub[v] + RcC * pTree->pLen[v];
     }
     /* the driver's NLDM tables see the whole net, and the Elmore delay of
        a node accumulates R_e * (C_e/2 + C_subtree(e)) along its path */
-    for ( i = 1; i < nPins; i++ )
+    pDelNode[0] = 0.0f;
+    for ( i = 1; i < nOrder; i++ )
     {
-        *pTotalCap += pCap[i] + RcC * pLen[i];
-        *pTotalLen += pLen[i];
+        v = pOrder[i];
+        pDelNode[v] = pDelNode[pTree->pParent[v]] +
+                      RcR * pTree->pLen[v] * ( pSub[v] + 0.5f * RcC * pTree->pLen[v] );
     }
-    pDelay[0] = 0.0f;
-    for ( i = 1; i < nAdded; i++ )
-    {
-        int v = pOrder[i];
-        pDelay[v] = pDelay[pParent[v]] +
-                    RcR * pLen[v] * ( pSub[v] + 0.5f * RcC * pLen[v] );
-    }
-    ABC_FREE( pParent );
-    ABC_FREE( pOrder );
-    ABC_FREE( pBest );
-    ABC_FREE( pLen );
+    for ( i = 0; i < pTree->nTerms; i++ )
+        pDelay[i] = pDelNode[pTree->pTermNode[i]];
+    *pTotalLen = pTree->TotalLen;
+    *pTotalCap = RcC * pTree->TotalLen;
+    for ( i = 0; i < pTree->nTerms; i++ )
+        *pTotalCap += pCap[i];
+    *pnSteiner  = pTree->nSteiner;
+    *pnRun      = pTree->fRun;
+    *pnRejected = pTree->fRun && !pTree->fUsed;
     ABC_FREE( pSub );
+    ABC_FREE( pDelNode );
+    ABC_FREE( pCount );
+    ABC_FREE( pStart );
+    ABC_FREE( pChild );
+    ABC_FREE( pOrder );
+    Phys_StreeFree( pTree );
 }
 /* adds a sink pin to the list of the net driven by iDriver */
 static void Phys_StaNetAdd( Vec_Ptr_t * vSinkObj, Vec_Ptr_t * vSinkPin,
@@ -262,6 +272,8 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
     float TotalWire = 0.0f, TotalWireCap = 0.0f, MaxNetDelay = 0.0f;
     int i, k, nCells = 0, nIns = 0, nNets = 0, nSinks = 0, nEndpoints;
     int iWorstNet = -1, nWorstSinks = 0;
+    int nSteinerTotal = 0, nSteinerNet = 0, nSteinerNets = 0;
+    int nSteinerRun = 0, nSteinerRej = 0;
     if ( p == NULL || pGia == NULL || pPars == NULL )
         return 0;
     if ( pPars->Period < 0.0f || pPars->InputSlew < 0.0f ||
@@ -392,7 +404,7 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
         Vec_Int_t * vPin = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, i );
         float * pX, * pY, * pCap, * pDel;
         float TotalCap, TotalLen, NetMax = 0.0f;
-        int nPins, q;
+        int nPins, q, fRun = 0, fRejected = 0;
         if ( vObj == NULL )
             continue;
         nPins = 1 + Vec_IntSize( vObj );
@@ -420,7 +432,12 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
             pY[q+1]   = (Phys_StaLitY( p, iSink ) + (float)dy) / Dbu;
             pCap[q+1] = Phys_StaPinCap( vPins, iPin );
         }
-        Phys_StaElmoreNet( pX, pY, pCap, nPins, RcR, RcC, pDel, &TotalCap, &TotalLen );
+        Phys_StaElmoreNet( pX, pY, pCap, nPins, RcR, RcC, pPars->fSteiner, pDel,
+                           &TotalCap, &TotalLen, &nSteinerNet, &fRun, &fRejected );
+        nSteinerTotal += nSteinerNet;
+        nSteinerNets  += (nSteinerNet > 0);
+        nSteinerRun   += fRun;
+        nSteinerRej   += fRejected;
         Vec_FltWriteEntry( vNetCap, i, TotalCap );
         Vec_FltWriteEntry( vNetLen, i, TotalLen );
         TotalWire    += TotalLen;
@@ -825,8 +842,13 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
         {
             fprintf( stdout, "STA: %d cells, %d input pins, %d nets, %d sinks, %d endpoints.\n",
                      nCells, nIns, nNets, nSinks, nEndpoints );
-            fprintf( stdout, "STA: wire %.2f um, %.3f pF, R=%.3f ohm/um, C=%.6f pF/um.\n",
-                     TotalWire, TotalWireCap, RcR, RcC );
+            fprintf( stdout, "STA: wire %.2f um (%s, %d Steiner points on %d nets), %.3f pF, "
+                             "R=%.3f ohm/um, C=%.6f pF/um.\n",
+                     TotalWire, pPars->fSteiner ? "Steiner tree" : "spanning tree",
+                     nSteinerTotal, nSteinerNets, TotalWireCap, RcR, RcC );
+            if ( pPars->fSteiner )
+                fprintf( stdout, "STA: Steiner search ran on %d nets, %d had no shorter tree.\n",
+                         nSteinerRun, nSteinerRej );
             if ( iWorstNet >= 0 )
                 fprintf( stdout, "STA: slowest net: driver literal %d, %d sinks, %.2f ps of Elmore delay.\n",
                          iWorstNet, nWorstSinks, MaxNetDelay );

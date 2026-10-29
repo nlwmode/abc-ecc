@@ -51,6 +51,9 @@
 #   SIG_RES (ohm/um) and SIG_CAP (pF/um) set the unit wire RC used by the
 #   timing analysis; when they are empty, &phys_sta takes the resistance
 #   from the LEF routing layer and a default capacitance.
+#   STA_ARGS adds options to every timing analysis, for example
+#   STA_ARGS="-m" to use the minimum spanning tree instead of the
+#   Steiner tree as the wire model.
 
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -97,6 +100,7 @@ case $MODE in
     *) echo "Unknown mapping mode: $MODE (use phys, root or nf)" >&2; exit 1 ;;
 esac
 MAPCMD="$MAPCMD ${MAP_ARGS:-}"
+STACMD="&phys_sta ${STA_ARGS:-}"
 
 if [ $# -gt 0 ]; then
     designs=("$@")
@@ -134,10 +138,10 @@ for d in "${designs[@]}"; do
     # and time them, and only then map with the physical cut ranking.  Every
     # iteration maps again on the placement of the mapped cells, which is
     # the physical feedback of the flow.
-    cmd="$cmd; &phys_start; &read $d; &phys_bind; &phys_place -v; &phys_sta"
+    cmd="$cmd; &phys_start; &read $d; &phys_bind; &phys_place -v; $STACMD"
     cmd="$cmd; &phys_dump -o $WS -t it0"
     for i in $(seq 1 "$ITER"); do
-        cmd="$cmd; $MAPCMD; &phys_place -v; &phys_sta; &phys_dump -o $WS -t it$i"
+        cmd="$cmd; $MAPCMD; &phys_place -v; $STACMD; &phys_dump -o $WS -t it$i"
     done
     if [ "$NETLIST" = 1 ]; then
         # &put turns the mapped Gia into an ABC network and write_verilog

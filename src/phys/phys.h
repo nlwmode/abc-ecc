@@ -17,6 +17,7 @@
 #include "phys/lib/physLef.h"
 #include "phys/lib/physLiberty.h"
 #include "phys/lib/physSuper.h"
+#include "phys/lib/physSteiner.h"
 
 #endif
 

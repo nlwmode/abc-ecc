@@ -6,12 +6,12 @@
                Cell delays and output slews come from the Liberty
                lookup tables.  Interconnect delays come from an Elmore
                model of an RC tree built from the placement: the pins of
-               every net are joined by a rectilinear minimum spanning
-               tree, the driver sees the whole tree capacitance as its
-               load, and each sink gets the Elmore delay of its own path
-               from the driver.  Both cell and wire timing use the
-               internal units of the physical-synthesis layer (ps, pF,
-               ohm).]
+               every net are joined by a rectilinear Steiner tree (a
+               minimum spanning tree when fSteiner is off), the driver
+               sees the whole tree capacitance as its load, and each
+               sink gets the Elmore delay of its own path from the
+               driver.  Both cell and wire timing use the internal units
+               of the physical-synthesis layer (ps, pF, ohm).]
 
   SideEffects []
 
@@ -32,6 +32,7 @@ typedef struct Phys_StaPars_t_
     char * pLayer;     /* routing layer for RC, NULL/"auto" = auto     */
     float WireRes;     /* ohm/um; <= 0.0 uses the LEF layer value      */
     float WireCap;     /* pF/um; <= 0.0 uses the LEF/default value     */
+    int   fSteiner;    /* 1 = Steiner wire tree, 0 = spanning tree     */
     int   fVerbose;
 } Phys_StaPars_t;
 

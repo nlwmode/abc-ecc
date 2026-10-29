@@ -70,3 +70,5 @@ abc.history
 
 # physical-synthesis debug workspace (test/phys_flow.sh)
 phys_ws/
+# wire-model experiment workspace (test/phys_steiner_exp.sh)
+phys_steiner_ws/

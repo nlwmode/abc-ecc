@@ -1211,7 +1211,7 @@ int Abc_CommandPhysSta( Abc_Frame_t * pAbc, int argc, char ** argv )
     Pars.WireRes = Abc_FrameReadSignalRes();
     Pars.WireCap = Abc_FrameReadSignalCap();
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "T:s:l:r:c:vh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "T:s:l:r:c:mvh" )) != EOF )
     {
         switch ( c )
         {
@@ -1234,6 +1234,9 @@ int Abc_CommandPhysSta( Abc_Frame_t * pAbc, int argc, char ** argv )
         case 'c':
             if ( globalUtilOptarg == NULL ) goto usage;
             Pars.WireCap = (float)atof( globalUtilOptarg );
+            break;
+        case 'm':
+            Pars.fSteiner ^= 1;
             break;
         case 'v':
             fVerbose ^= 1;
@@ -1262,13 +1265,14 @@ int Abc_CommandPhysSta( Abc_Frame_t * pAbc, int argc, char ** argv )
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: &phys_sta [-T num] [-s num] [-l layer] [-r num] [-c num] [-vh]\n" );
+    Abc_Print( -2, "usage: &phys_sta [-T num] [-s num] [-l layer] [-r num] [-c num] [-mvh]\n" );
     Abc_Print( -2, "\t          reports timing with Elmore wire delays extracted from the placement\n" );
     Abc_Print( -2, "\t-T num  : clock period in ps [default = longest path]\n" );
     Abc_Print( -2, "\t-s num  : input slew in ps [default = %.2f]\n", Def.InputSlew );
     Abc_Print( -2, "\t-l layer: routing layer for RC, or \"auto\" [default = auto]\n" );
     Abc_Print( -2, "\t-r num  : unit wire resistance in ohm/um [default = set_signal_res, else LEF]\n" );
     Abc_Print( -2, "\t-c num  : unit wire capacitance in pF/um [default = set_signal_cap, else LEF]\n" );
+    Abc_Print( -2, "\t-m      : minimum spanning tree instead of the Steiner tree [default = Steiner]\n" );
     Abc_Print( -2, "\t-v      : print detailed information [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );
     return 1;
