@@ -1115,7 +1115,7 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
     Phys_PlaceSetDefault( &Def );
     Pars = Def;
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "u:a:i:s:o:g:vh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "u:a:i:s:o:g:p:e:vh" )) != EOF )
     {
         switch ( c )
         {
@@ -1148,6 +1148,24 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
                 goto usage;
             }
             break;
+        case 'p':
+            if ( globalUtilOptarg == NULL ) goto usage;
+            Pars.nPinMode = atoi( globalUtilOptarg );
+            if ( Pars.nPinMode < 0 || Pars.nPinMode > 3 )
+            {
+                Abc_Print( -1, "The pin assignment mode should be in [0, 3].\n" );
+                goto usage;
+            }
+            break;
+        case 'e':
+            if ( globalUtilOptarg == NULL ) goto usage;
+            Pars.IoPitch = (float)atof( globalUtilOptarg );
+            if ( Pars.IoPitch < 0.0f )
+            {
+                Abc_Print( -1, "The IO pin pitch should not be negative.\n" );
+                goto usage;
+            }
+            break;
         case 'v':
             fVerbose ^= 1;
             break;
@@ -1175,7 +1193,7 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: &phys_place [-u num] [-a num] [-i num] [-s num] [-o num] [-g num] [-vh]\n" );
+    Abc_Print( -2, "usage: &phys_place [-u num] [-a num] [-i num] [-s num] [-o num] [-g num] [-p num] [-e num] [-vh]\n" );
     Abc_Print( -2, "\t          places the bound Gia netlist (virtual AIG cells before\n" );
     Abc_Print( -2, "\t          mapping, mapped standard cells afterwards)\n" );
     Abc_Print( -2, "\t-u num  : target core utilization, 0 < num <= 1 [default = %.2f]\n", Def.Util );
@@ -1184,6 +1202,13 @@ usage:
     Abc_Print( -2, "\t-s num  : nonlinear placement iterations [default = %d]\n", Def.nIterNest );
     Abc_Print( -2, "\t-o num  : density overflow at which to stop [default = %.2f]\n", Def.StopOverflow );
     Abc_Print( -2, "\t-g num  : RUDY bins along the longer core side [default = %d]\n", Def.nCongBins );
+    Abc_Print( -2, "\t-p num  : pin assignment: 0 = object order and one placement pass,\n" );
+    Abc_Print( -2, "\t          1 = order the terminals by the cells they connect to and\n" );
+    Abc_Print( -2, "\t          place again, 2 = also let every terminal choose the side of\n" );
+    Abc_Print( -2, "\t          the core it sits on [default], 3 = place twice and keep\n" );
+    Abc_Print( -2, "\t          the object order (the control for 1 and 2)\n" );
+    Abc_Print( -2, "\t-e num  : minimum IO pin pitch in um; a core too small to host the\n" );
+    Abc_Print( -2, "\t          terminals at this pitch is enlarged [default = %.2f, no limit]\n", Def.IoPitch );
     Abc_Print( -2, "\t-v      : print detailed information [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );
     return 1;

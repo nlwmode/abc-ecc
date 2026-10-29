@@ -15,6 +15,15 @@
                     a Barzilai-Borwein step size, and the density weight
                     grows whenever the density overflow stops improving
                  4) legalize the cells into standard-cell rows
+               The terminals are boundary conditions of the placement,
+               and object order says nothing about connectivity, so by
+               default the placement is solved first, every terminal is
+               then moved to the side and to the slot where its
+               connected cells are, and the placement is solved again
+               with the new pins.  nPinMode = 0 keeps the object order
+               on the left and right edges (one pass), 1 orders the two
+               sides only, and 3 solves the two passes without moving
+               the terminals, which is the control for 1 and 2.
                The placer works on the Gia network only through the
                bindings stored in Phys_Man_t, so the cost model can be
                replaced without touching the command layer.]
@@ -39,6 +48,9 @@ typedef struct Phys_PlacePars_t_
     int   nIterNest;    /* nonlinear placement iterations          */
     float StopOverflow; /* density overflow at which to stop       */
     int   nCongBins;    /* RUDY bins along the longer core side    */
+    int   nPinMode;     /* 0 = object order, 1 = sorted on two sides,
+                           2 = sorted and assigned to all four sides */
+    float IoPitch;      /* minimum IO pin pitch in um, 0 = no limit */
     int   fVerbose;
 } Phys_PlacePars_t;
 

@@ -88,6 +88,11 @@ void Phys_PlaceSetDefault( Phys_PlacePars_t * p )
     p->nIterNest    = 400;
     p->StopOverflow = 0.10f;
     p->nCongBins    = 64;
+    /* the terminals are boundary conditions of the placement, so they are
+       assigned where their logic is by default; -p 0 restores the object
+       order of the left and right edges, at half the placement runtime */
+    p->nPinMode     = 2;
+    p->IoPitch      = 0.0f;
     p->fVerbose     = 0;
 }
 
@@ -1556,6 +1561,267 @@ static void Phys_PlaceNesterov( Phys_Man_t * p, Phys_PNode_t * pNodes, int nNode
 }
 
 
+/* the four sides of the core, in the order the assignment uses */
+enum { PHYS_PIN_LEFT = 0, PHYS_PIN_RIGHT, PHYS_PIN_BOTTOM, PHYS_PIN_TOP };
+
+typedef struct Phys_PinSort_t_
+{
+    float Key;
+    int   Id;
+} Phys_PinSort_t;
+
+static int Phys_PlacePinCompare( const void * p1, const void * p2 )
+{
+    const Phys_PinSort_t * a = (const Phys_PinSort_t *)p1;
+    const Phys_PinSort_t * b = (const Phys_PinSort_t *)p2;
+    if ( a->Key < b->Key ) return -1;
+    if ( a->Key > b->Key ) return  1;
+    return a->Id - b->Id;
+}
+
+/**Function*************************************************************
+
+  Synopsis    [Assigns every PI and PO to the side and the slot it belongs to]
+
+  Description [The placement is only as good as the boundary conditions
+               of its pins, and object order says nothing about
+               connectivity.  A terminal is therefore moved to where it
+               connects: a PO follows the driver of its net, a PI moves
+               to the median position of the cells it feeds, and the
+               terminals are packed along the sides in the order of
+               those targets.  Matching the targets to evenly spaced
+               slots is minimized by the sorted matching, so sorting is
+               the whole one-dimensional optimizer.
+               Mode 1 keeps the PIs on the left and the POs on the right
+               and only changes the order along the edge.  Mode 2 also
+               assigns each terminal to the nearest side that still has
+               room, so a terminal whose logic sits at the bottom of the
+               core does not have to reach the middle of the right edge.
+               A side takes as many terminals as its share of the core
+               perimeter, or fewer when the IO pitch says so, and the
+               greedy order is by regret: the terminals that would lose
+               the most by not getting their nearest side are assigned
+               first.
+               The distance from a terminal to its target, summed over
+               all terminals, is returned before and after the move, in
+               DBU, as a measure of what the assignment is worth.]
+
+  SideEffects []
+
+***********************************************************************/
+static void Phys_PlaceAssignPins( Phys_PNode_t * pNodes, int nNodes, Vec_Int_t * vNode2Idx,
+                                  Vec_Ptr_t * vSinks, int nLits, float x0, float y0,
+                                  float W, float H, float Dbu, Phys_PlacePars_t * pPars,
+                                  double * pBefore, double * pAfter )
+{
+    float * pTx = ABC_ALLOC( float, nNodes );
+    float * pTy = ABC_ALLOC( float, nNodes );
+    Phys_PinSort_t * pSort = ABC_ALLOC( Phys_PinSort_t, nNodes );
+    int * pEdge = ABC_ALLOC( int, nNodes );
+    double * pDist = ABC_ALLOC( double, 4 * nNodes );
+    Vec_Flt_t * vXs = Vec_FltAlloc( 16 );
+    Vec_Flt_t * vYs = Vec_FltAlloc( 16 );
+    int nIo = 0, i, k, s, e, q, kk;
+    *pBefore = *pAfter = 0.0;
+    for ( i = 0; i < nNodes; i++ )
+        pTx[i] = pNodes[i].X, pTy[i] = pNodes[i].Y;
+    /* a primary output follows the driver of its net */
+    for ( q = 0; q < nLits; q++ )
+    {
+        Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
+        int iDrv;
+        if ( vList == NULL )
+            continue;
+        iDrv = Vec_IntEntry( vNode2Idx, q );
+        if ( iDrv < 0 )
+            continue;
+        Vec_IntForEachEntry( vList, s, kk )
+            if ( pNodes[s].Kind == 2 )
+                pTx[s] = pNodes[iDrv].X, pTy[s] = pNodes[iDrv].Y;
+    }
+    /* a primary input moves to the median of the cells it feeds; both
+       phases of its literal are followed, because the pin has no phase */
+    for ( i = 0; i < nNodes; i++ )
+    {
+        if ( pNodes[i].Kind != 1 )
+            continue;
+        Vec_FltClear( vXs );
+        Vec_FltClear( vYs );
+        for ( q = pNodes[i].Lit; q <= pNodes[i].Lit + 1 && q < nLits; q++ )
+        {
+            Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
+            if ( vList == NULL )
+                continue;
+            Vec_IntForEachEntry( vList, s, kk )
+                Vec_FltPush( vXs, pNodes[s].X ), Vec_FltPush( vYs, pNodes[s].Y );
+        }
+        if ( Vec_FltSize(vXs) == 0 )
+            continue;
+        Vec_FltSort( vXs, 0 );
+        Vec_FltSort( vYs, 0 );
+        pTx[i] = Vec_FltEntry( vXs, Vec_FltSize(vXs) / 2 );
+        pTy[i] = Vec_FltEntry( vYs, Vec_FltSize(vYs) / 2 );
+    }
+    for ( i = 0; i < nNodes; i++ )
+        if ( pNodes[i].Kind != 0 )
+        {
+            *pBefore += fabs( (double)pNodes[i].X - pTx[i] ) + fabs( (double)pNodes[i].Y - pTy[i] );
+            nIo++;
+        }
+    /* mode 1: the sides are given, only the order changes */
+    if ( pPars->nPinMode == 1 )
+    {
+        for ( s = 1; s <= 2; s++ )
+        {
+            int n = 0;
+            for ( i = 0; i < nNodes; i++ )
+                if ( pNodes[i].Kind == s )
+                    pSort[n].Key = pTy[i], pSort[n].Id = i, n++;
+            qsort( pSort, n, sizeof(Phys_PinSort_t), Phys_PlacePinCompare );
+            for ( i = 0; i < n; i++ )
+            {
+                Phys_PNode_t * pNode = pNodes + pSort[i].Id;
+                pNode->X = s == 1 ? x0 : x0 + W;
+                pNode->Y = y0 + H * (0.5f + i) / (n + 1);
+            }
+        }
+    }
+    /* mode 2: the nearest side with room, then the order along it */
+    else if ( pPars->nPinMode >= 2 )
+    {
+        double L[4], Total = 2.0 * ((double)W + (double)H);
+        int cap[4], nUsed[4] = {0, 0, 0, 0}, nSum = 0;
+        L[PHYS_PIN_LEFT] = L[PHYS_PIN_RIGHT] = H;
+        L[PHYS_PIN_BOTTOM] = L[PHYS_PIN_TOP] = W;
+        /* the sides share the terminals in proportion to their length;
+           the rounding leftovers go out one at a time, so the capacity
+           always covers every terminal */
+        for ( e = 0; e < 4; e++ )
+            cap[e] = (int)( nIo * L[e] / Total ), nSum += cap[e];
+        for ( e = 0; nSum < nIo; e = (e + 1) % 4 )
+            cap[e]++, nSum++;
+        /* every side can take at least one terminal, whatever its share,
+           so the least-loaded fallback below never divides by zero */
+        for ( e = 0; e < 4; e++ )
+            if ( cap[e] < 1 )
+                cap[e] = 1;
+        if ( pPars->IoPitch > 0.0f )
+        {
+            /* a side cannot take more terminals than its length allows
+               at the pitch; when the core is too small even for that,
+               the slots end up closer than the pitch and the greedy
+               assignment falls back to the least loaded side */
+            int nCap = 0;
+            for ( e = 0; e < 4; e++ )
+            {
+                int Cp = (int)( L[e] / ((double)pPars->IoPitch * (double)Dbu) );
+                if ( Cp < 1 )
+                    Cp = 1;
+                if ( Cp < cap[e] )
+                    cap[e] = Cp;
+                nCap += cap[e];
+            }
+            if ( nCap < nIo && pPars->fVerbose )
+                fprintf( stdout, "Placement: the core cannot host %d terminals at a %.2f um pitch; "
+                         "the slots are closer than the pitch.\n", nIo, pPars->IoPitch );
+        }
+        for ( i = 0; i < nNodes; i++ )
+        {
+            double * pD = pDist + 4 * i;
+            if ( pNodes[i].Kind == 0 )
+                continue;
+            pD[PHYS_PIN_LEFT]   = pTx[i] > x0 ? pTx[i] - x0 : 0.0;
+            pD[PHYS_PIN_RIGHT]  = x0 + W > pTx[i] ? x0 + W - pTx[i] : 0.0;
+            pD[PHYS_PIN_BOTTOM] = pTy[i] > y0 ? pTy[i] - y0 : 0.0;
+            pD[PHYS_PIN_TOP]    = y0 + H > pTy[i] ? y0 + H - pTy[i] : 0.0;
+        }
+        /* the terminals that would lose the most from a second-choice
+           side are assigned first */
+        {
+            int n = 0;
+            for ( i = 0; i < nNodes; i++ )
+            {
+                double Best = 1e30, Second = 1e30;
+                if ( pNodes[i].Kind == 0 )
+                    continue;
+                for ( e = 0; e < 4; e++ )
+                {
+                    double D = pDist[4*i+e];
+                    if ( D < Best )
+                        Second = Best, Best = D;
+                    else if ( D < Second )
+                        Second = D;
+                }
+                pSort[n].Key = (float)(Second - Best), pSort[n].Id = i, n++;
+            }
+            qsort( pSort, n, sizeof(Phys_PinSort_t), Phys_PlacePinCompare );
+            for ( i = 0; i < n; i++ )
+            {
+                int iNode = pSort[i].Id;
+                int fUsed[4] = {0, 0, 0, 0};
+                int eBest = -1;
+                for ( k = 0; k < 4; k++ )
+                {
+                    eBest = -1;
+                    for ( e = 0; e < 4; e++ )
+                        if ( !fUsed[e] && (eBest < 0 || pDist[4*iNode+e] < pDist[4*iNode+eBest]) )
+                            eBest = e;
+                    fUsed[eBest] = 1;
+                    if ( nUsed[eBest] < cap[eBest] )
+                        break;
+                }
+                /* the caps are sized to make this impossible; the least
+                   loaded side still takes the terminal if it is not */
+                if ( k == 4 )
+                {
+                    int eBest = 0;
+                    for ( e = 1; e < 4; e++ )
+                        if ( (double)nUsed[e] / cap[e] < (double)nUsed[eBest] / cap[eBest] )
+                            eBest = e;
+                    pEdge[iNode] = eBest;
+                    nUsed[eBest]++;
+                    continue;
+                }
+                pEdge[iNode] = eBest;
+                nUsed[eBest]++;
+            }
+        }
+        for ( e = 0; e < 4; e++ )
+        {
+            int n = 0;
+            for ( i = 0; i < nNodes; i++ )
+                if ( pNodes[i].Kind != 0 && pEdge[i] == e )
+                    pSort[n].Key = e < 2 ? pTy[i] : pTx[i], pSort[n].Id = i, n++;
+            qsort( pSort, n, sizeof(Phys_PinSort_t), Phys_PlacePinCompare );
+            for ( k = 0; k < n; k++ )
+            {
+                Phys_PNode_t * pNode = pNodes + pSort[k].Id;
+                float Slot = e < 2 ? y0 + H * (0.5f + k) / (n + 1)
+                                   : x0 + W * (0.5f + k) / (n + 1);
+                if ( e == PHYS_PIN_LEFT )
+                    pNode->X = x0, pNode->Y = Slot;
+                else if ( e == PHYS_PIN_RIGHT )
+                    pNode->X = x0 + W, pNode->Y = Slot;
+                else if ( e == PHYS_PIN_BOTTOM )
+                    pNode->X = Slot, pNode->Y = y0;
+                else
+                    pNode->X = Slot, pNode->Y = y0 + H;
+            }
+        }
+    }
+    for ( i = 0; i < nNodes; i++ )
+        if ( pNodes[i].Kind != 0 )
+            *pAfter += fabs( (double)pNodes[i].X - pTx[i] ) + fabs( (double)pNodes[i].Y - pTy[i] );
+    ABC_FREE( pTx );
+    ABC_FREE( pTy );
+    ABC_FREE( pSort );
+    ABC_FREE( pEdge );
+    ABC_FREE( pDist );
+    Vec_FltFree( vXs );
+    Vec_FltFree( vYs );
+}
+
+
 /**Function*************************************************************
 
   Synopsis    [Runs analytical placement]
@@ -1575,7 +1841,7 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     Vec_Flt_t * vEW, * vDiag, * vBx, * vBy, * vSolX, * vSolY, * vRefX, * vRefY;
     double TotalArea = 0.0;
     float x0, y0, W, H, Dbu, Anchor, AvgDiag;
-    int i, k, q, nLits, nNodes = 0, nFree = 0, nEdges = 0, nOverlaps;
+    int i, k, q, nLits, nNodes = 0, nFree = 0, nEdges = 0, nOverlaps, iPass, nPasses;
     unsigned Seed = 12345;
     if ( p == NULL || pGia == NULL || pPars == NULL )
         return 0;
@@ -1684,7 +1950,10 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     Vec_IntFill( vFreeIdx, nNodes, -1 );
     Vec_IntForEachEntry( vFree, i, k )
         Vec_IntWriteEntry( vFreeIdx, i, k );
-    /* core area */
+    /* core area.  A pin-limited design needs a core large enough for
+       its terminals: four sides at one pin per pitch.  The cells then
+       occupy less of the core than the target utilization says, which
+       is what a real floorplan of such a design looks like. */
     {
         double CoreArea = TotalArea / (double)(pPars->Util > 0.01f ? pPars->Util : 0.6f);
         float Aspect = pPars->Aspect > 0.01f ? pPars->Aspect : 1.0f;
@@ -1694,6 +1963,21 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         H = (float)(int)( H / p->SiteH + 0.999 ) * p->SiteH;
         if ( W < 10 * p->SiteW ) W = 10 * p->SiteW;
         if ( H < 4  * p->SiteH ) H = 4  * p->SiteH;
+        if ( pPars->IoPitch > 0.0f )
+        {
+            int nIo = 0;
+            float MinSide;
+            for ( i = 0; i < nNodes; i++ )
+                if ( pNodes[i].Kind != 0 )
+                    nIo++;
+            MinSide = (float)( ceil( 0.25 * nIo ) * (double)pPars->IoPitch * (double)Dbu );
+            if ( W < MinSide )
+                W = MinSide;
+            if ( H < MinSide )
+                H = MinSide;
+            W = (float)(int)( W / p->SiteW + 0.999 ) * p->SiteW;
+            H = (float)(int)( H / p->SiteH + 0.999 ) * p->SiteH;
+        }
         x0 = 0.0f;
         y0 = 0.0f;
     }
@@ -1771,179 +2055,233 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         Vec_IntPush( vList, i );
         Vec_IntPush( vPins, PHYS_PLACE_PIN_NONE ); /* a primary output has no pin */
     }
-    /* build the quadratic system over free nodes */
-    vEI = Vec_IntAlloc( 1024 );
-    vEJ = Vec_IntAlloc( 1024 );
-    vEW = Vec_FltAlloc( 1024 );
+    /* The placement is solved once, and, when the terminals are to be
+       reassigned, a second time with the terminals moved to the places
+       they connect to.  The four-side mode leaves the terminals out of
+       the first pass entirely, so that their arbitrary order does not
+       bias the cell positions the assignment reads.  Mode 3 solves the
+       same two passes without touching the terminals; it is the control
+       that tells the effect of the assignment from the effect of the
+       second pass. */
+    vEI   = Vec_IntAlloc( 1024 );
+    vEJ   = Vec_IntAlloc( 1024 );
+    vEW   = Vec_FltAlloc( 1024 );
     vDiag = Vec_FltStart( nFree );
     vBx   = Vec_FltStart( nFree );
     vBy   = Vec_FltStart( nFree );
-    {
-        Vec_Int_t * vPinIdx = Vec_IntAlloc( 16 );
-        Vec_Flt_t * vPinDx  = Vec_FltAlloc( 16 );
-        Vec_Flt_t * vPinDy  = Vec_FltAlloc( 16 );
-        for ( q = 0; q < nLits; q++ )
-        {
-            Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
-            Vec_Int_t * vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, q );
-            int iDriver, nPins, a, b;
-            float w;
-            if ( vList == NULL )
-                continue;
-            iDriver = Vec_IntEntry( vNode2Idx, q );
-            if ( iDriver < 0 )
-                continue;
-            /* the driver uses its output pin, every sink its input pin;
-               the offsets enter the right-hand side, not the matrix */
-            Vec_IntClear( vPinIdx );
-            Vec_FltClear( vPinDx );
-            Vec_FltClear( vPinDy );
-            Vec_IntPush( vPinIdx, iDriver );
-            Vec_FltPush( vPinDx, pNodes[iDriver].Dxo );
-            Vec_FltPush( vPinDy, pNodes[iDriver].Dyo );
-            Vec_IntForEachEntry( vList, i, k )
-            {
-                int iPin = Vec_IntEntry( vPins, k );
-                Vec_IntPush( vPinIdx, i );
-                Vec_FltPush( vPinDx, Phys_PlacePinDx(pNodes + i, iPin) );
-                Vec_FltPush( vPinDy, Phys_PlacePinDy(pNodes + i, iPin) );
-            }
-            nPins = Vec_IntSize( vPinIdx );
-            if ( nPins < 2 )
-                continue;
-            w = 1.0f / (float)nPins;
-            for ( a = 0; a < nPins; a++ )
-            for ( b = a + 1; b < nPins; b++ )
-            {
-                int ia = Vec_IntEntry( vPinIdx, a );
-                int ib = Vec_IntEntry( vPinIdx, b );
-                int fa = ia >= 0 ? Vec_IntEntry( vFreeIdx, ia ) : -1;
-                int fb = ib >= 0 ? Vec_IntEntry( vFreeIdx, ib ) : -1;
-                float dx = Vec_FltEntry(vPinDx, a) - Vec_FltEntry(vPinDx, b);
-                float dy = Vec_FltEntry(vPinDy, a) - Vec_FltEntry(vPinDy, b);
-                if ( fa >= 0 && fb >= 0 )
-                {
-                    Vec_IntPush( vEI, fa );
-                    Vec_IntPush( vEJ, fb );
-                    Vec_FltPush( vEW, w );
-                    Vec_FltAddToEntry( vDiag, fa, w );
-                    Vec_FltAddToEntry( vDiag, fb, w );
-                    /* the pins of the two cells are offset in opposite
-                       directions, which shifts the solution of the pair */
-                    Vec_FltAddToEntry( vBx,   fa, -w * dx );
-                    Vec_FltAddToEntry( vBx,   fb,  w * dx );
-                    Vec_FltAddToEntry( vBy,   fa, -w * dy );
-                    Vec_FltAddToEntry( vBy,   fb,  w * dy );
-                    nEdges++;
-                }
-                else if ( fa >= 0 )
-                {
-                    Vec_FltAddToEntry( vDiag, fa, w );
-                    Vec_FltAddToEntry( vBx,   fa, w * pNodes[ia].X );
-                    Vec_FltAddToEntry( vBy,   fa, w * pNodes[ia].Y );
-                }
-                else if ( fb >= 0 )
-                {
-                    Vec_FltAddToEntry( vDiag, fb, w );
-                    Vec_FltAddToEntry( vBx,   fb, w * pNodes[ib].X );
-                    Vec_FltAddToEntry( vBy,   fb, w * pNodes[ib].Y );
-                }
-            }
-        }
-        Vec_IntFree( vPinIdx );
-        Vec_FltFree( vPinDx );
-        Vec_FltFree( vPinDy );
-    }
     vSolX = Vec_FltStart( nFree );
     vSolY = Vec_FltStart( nFree );
     vRefX = Vec_FltStart( nFree );
     vRefY = Vec_FltStart( nFree );
+    nPasses = pPars->nPinMode > 0 ? 2 : 1;
+    for ( iPass = 0; iPass < nPasses; iPass++ )
     {
-        float Avg = 0.0f;
-        for ( k = 0; k < nFree; k++ )
-            Avg += Vec_FltEntry( vDiag, k );
-        AvgDiag = Avg / (float)nFree + 1.0f;
-        /* just enough anchoring to make the system non-singular */
-        Anchor = 1e-3f * AvgDiag;
-    }
-    for ( k = 0; k < nFree; k++ )
-    {
-        float rx = x0 + 0.5f * W, ry = y0 + 0.5f * H;
-        Vec_FltWriteEntry( vRefX, k, rx );
-        Vec_FltWriteEntry( vRefY, k, ry );
-    }
-    if ( pPars->fVerbose )
-        fprintf( stdout, "Placement: %d nodes (%d free), %d quadratic edges, core %.1f x %.1f um.\n",
-                 nNodes, nFree, nEdges, W / Dbu, H / Dbu );
-    if ( pPars->fVerbose )
-        Phys_PlaceReport( "random init:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
-    Phys_PlaceSolve( nFree, vDiag, vEI, vEJ, vEW, vBx, vRefX, Anchor, vSolX, pPars->nIterCG );
-    Phys_PlaceSolve( nFree, vDiag, vEI, vEJ, vEW, vBy, vRefY, Anchor, vSolY, pPars->nIterCG );
-    Vec_IntForEachEntry( vFree, i, k )
-    {
-        pNodes[i].X = Vec_FltEntry( vSolX, k );
-        pNodes[i].Y = Vec_FltEntry( vSolY, k );
-    }
-    if ( pPars->fVerbose )
-        Phys_PlaceReport( "after CG:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
-    Phys_PlaceScale( pNodes, vFree, vSolX, vSolY, x0, y0, W, H, TotalArea, pPars->Util );
-    if ( pPars->fVerbose )
-        Phys_PlaceReport( "after scale:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
-    /* Build the CSR net list of the nonlinear placement.  The driver of
-       every net comes first, followed by its sinks; the pins index into
-       the node array, so the fixed terminals are addressed the same way
-       as the movable cells. */
-    {
-        Vec_Int_t * vNetStart = Vec_IntAlloc( nLits + 1 );
-        Vec_Int_t * vNetPins  = Vec_IntAlloc( 4 * nLits + 16 );
-        Vec_Flt_t * vNetDx    = Vec_FltAlloc( 4 * nLits + 16 );
-        Vec_Flt_t * vNetDy    = Vec_FltAlloc( 4 * nLits + 16 );
-        double Overflow = 0.0, MaxDens = 0.0;
-        Vec_IntPush( vNetStart, 0 );
-        for ( q = 0; q < nLits; q++ )
-        {
-            Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
-            Vec_Int_t * vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, q );
-            int iDriver;
-            if ( vList == NULL )
-                continue;
-            iDriver = Vec_IntEntry( vNode2Idx, q );
-            if ( iDriver < 0 )
-                continue;
-            /* every pin of the net carries the LEF offset of its cell,
-               so the smooth bounding box follows the pins and not the
-               cell centers */
-            Vec_IntPush( vNetPins, iDriver );
-            Vec_FltPush( vNetDx, pNodes[iDriver].Dxo );
-            Vec_FltPush( vNetDy, pNodes[iDriver].Dyo );
-            Vec_IntForEachEntry( vList, i, k )
-            {
-                int iPin = Vec_IntEntry( vPins, k );
-                Vec_IntPush( vNetPins, i );
-                Vec_FltPush( vNetDx, Phys_PlacePinDx(pNodes + i, iPin) );
-                Vec_FltPush( vNetDy, Phys_PlacePinDy(pNodes + i, iPin) );
-            }
-            Vec_IntPush( vNetStart, Vec_IntSize(vNetPins) );
-        }
-        Phys_PlaceNesterov( p, pNodes, nNodes, nFree, vFree, vFreeIdx,
-                            Vec_IntArray(vNetStart), Vec_IntArray(vNetPins),
-                            Vec_FltArray(vNetDx), Vec_FltArray(vNetDy), Vec_IntSize(vNetStart)-1,
-                            x0, y0, W, H, TotalArea, Dbu, pPars, &Overflow, &MaxDens );
+        int fIgnoreIo = pPars->nPinMode == 2 && iPass == 0;
         if ( pPars->fVerbose )
-            fprintf( stdout, "Placement: nonlinear placement over %d nets finished at "
-                     "overflow %.3f and maximum bin density %.2f.\n",
-                     Vec_IntSize(vNetStart)-1, Overflow, MaxDens );
-        Vec_IntFree( vNetStart );
-        Vec_IntFree( vNetPins );
-        Vec_FltFree( vNetDx );
-        Vec_FltFree( vNetDy );
+        {
+            if ( nPasses > 1 )
+                fprintf( stdout, "Placement: pass %d of %d%s.\n", iPass + 1, nPasses,
+                         fIgnoreIo ? ", without the terminals" : ", with the terminals where they are" );
+            if ( iPass == 0 )
+                fprintf( stdout, "Placement: %d nodes (%d free), core %.1f x %.1f um.\n",
+                         nNodes, nFree, W / Dbu, H / Dbu );
+            if ( iPass == 0 )
+                Phys_PlaceReport( "random init:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
+        }
+        /* build the quadratic system over free nodes */
+        Vec_IntClear( vEI );
+        Vec_IntClear( vEJ );
+        Vec_FltClear( vEW );
+        Vec_FltFill( vDiag, nFree, 0.0f );
+        Vec_FltFill( vBx,   nFree, 0.0f );
+        Vec_FltFill( vBy,   nFree, 0.0f );
+        Vec_FltFill( vSolX, nFree, 0.0f );
+        Vec_FltFill( vSolY, nFree, 0.0f );
+        Vec_FltFill( vRefX, nFree, 0.0f );
+        Vec_FltFill( vRefY, nFree, 0.0f );
+        nEdges = 0;
+        {
+            Vec_Int_t * vPinIdx = Vec_IntAlloc( 16 );
+            Vec_Flt_t * vPinDx  = Vec_FltAlloc( 16 );
+            Vec_Flt_t * vPinDy  = Vec_FltAlloc( 16 );
+            for ( q = 0; q < nLits; q++ )
+            {
+                Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
+                Vec_Int_t * vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, q );
+                int iDriver, nPins, a, b;
+                float w;
+                if ( vList == NULL )
+                    continue;
+                iDriver = Vec_IntEntry( vNode2Idx, q );
+                if ( iDriver < 0 )
+                    continue;
+                /* the driver uses its output pin, every sink its input pin;
+                   the offsets enter the right-hand side, not the matrix */
+                Vec_IntClear( vPinIdx );
+                Vec_FltClear( vPinDx );
+                Vec_FltClear( vPinDy );
+                if ( !fIgnoreIo || pNodes[iDriver].Kind == 0 )
+                {
+                    Vec_IntPush( vPinIdx, iDriver );
+                    Vec_FltPush( vPinDx, pNodes[iDriver].Dxo );
+                    Vec_FltPush( vPinDy, pNodes[iDriver].Dyo );
+                }
+                Vec_IntForEachEntry( vList, i, k )
+                {
+                    int iPin = Vec_IntEntry( vPins, k );
+                    if ( fIgnoreIo && pNodes[i].Kind != 0 )
+                        continue;
+                    Vec_IntPush( vPinIdx, i );
+                    Vec_FltPush( vPinDx, Phys_PlacePinDx(pNodes + i, iPin) );
+                    Vec_FltPush( vPinDy, Phys_PlacePinDy(pNodes + i, iPin) );
+                }
+                nPins = Vec_IntSize( vPinIdx );
+                if ( nPins < 2 )
+                    continue;
+                w = 1.0f / (float)nPins;
+                for ( a = 0; a < nPins; a++ )
+                for ( b = a + 1; b < nPins; b++ )
+                {
+                    int ia = Vec_IntEntry( vPinIdx, a );
+                    int ib = Vec_IntEntry( vPinIdx, b );
+                    int fa = ia >= 0 ? Vec_IntEntry( vFreeIdx, ia ) : -1;
+                    int fb = ib >= 0 ? Vec_IntEntry( vFreeIdx, ib ) : -1;
+                    float dx = Vec_FltEntry(vPinDx, a) - Vec_FltEntry(vPinDx, b);
+                    float dy = Vec_FltEntry(vPinDy, a) - Vec_FltEntry(vPinDy, b);
+                    if ( fa >= 0 && fb >= 0 )
+                    {
+                        Vec_IntPush( vEI, fa );
+                        Vec_IntPush( vEJ, fb );
+                        Vec_FltPush( vEW, w );
+                        Vec_FltAddToEntry( vDiag, fa, w );
+                        Vec_FltAddToEntry( vDiag, fb, w );
+                        /* the pins of the two cells are offset in opposite
+                           directions, which shifts the solution of the pair */
+                        Vec_FltAddToEntry( vBx,   fa, -w * dx );
+                        Vec_FltAddToEntry( vBx,   fb,  w * dx );
+                        Vec_FltAddToEntry( vBy,   fa, -w * dy );
+                        Vec_FltAddToEntry( vBy,   fb,  w * dy );
+                        nEdges++;
+                    }
+                    else if ( fa >= 0 )
+                    {
+                        Vec_FltAddToEntry( vDiag, fa, w );
+                        Vec_FltAddToEntry( vBx,   fa, w * pNodes[ia].X );
+                        Vec_FltAddToEntry( vBy,   fa, w * pNodes[ia].Y );
+                    }
+                    else if ( fb >= 0 )
+                    {
+                        Vec_FltAddToEntry( vDiag, fb, w );
+                        Vec_FltAddToEntry( vBx,   fb, w * pNodes[ib].X );
+                        Vec_FltAddToEntry( vBy,   fb, w * pNodes[ib].Y );
+                    }
+                }
+            }
+            Vec_IntFree( vPinIdx );
+            Vec_FltFree( vPinDx );
+            Vec_FltFree( vPinDy );
+        }
+        {
+            float Avg = 0.0f;
+            for ( k = 0; k < nFree; k++ )
+                Avg += Vec_FltEntry( vDiag, k );
+            AvgDiag = Avg / (float)nFree + 1.0f;
+            /* just enough anchoring to make the system non-singular */
+            Anchor = 1e-3f * AvgDiag;
+        }
+        for ( k = 0; k < nFree; k++ )
+        {
+            float rx = x0 + 0.5f * W, ry = y0 + 0.5f * H;
+            Vec_FltWriteEntry( vRefX, k, rx );
+            Vec_FltWriteEntry( vRefY, k, ry );
+        }
+        Phys_PlaceSolve( nFree, vDiag, vEI, vEJ, vEW, vBx, vRefX, Anchor, vSolX, pPars->nIterCG );
+        Phys_PlaceSolve( nFree, vDiag, vEI, vEJ, vEW, vBy, vRefY, Anchor, vSolY, pPars->nIterCG );
+        Vec_IntForEachEntry( vFree, i, k )
+        {
+            pNodes[i].X = Vec_FltEntry( vSolX, k );
+            pNodes[i].Y = Vec_FltEntry( vSolY, k );
+        }
+        if ( pPars->fVerbose )
+            Phys_PlaceReport( "after CG:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
+        Phys_PlaceScale( pNodes, vFree, vSolX, vSolY, x0, y0, W, H, TotalArea, pPars->Util );
+        if ( pPars->fVerbose )
+            Phys_PlaceReport( "after scale:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
+        /* Build the CSR net list of the nonlinear placement.  The driver of
+           every net comes first, followed by its sinks; the pins index into
+           the node array, so the fixed terminals are addressed the same way
+           as the movable cells. */
+        {
+            Vec_Int_t * vNetStart = Vec_IntAlloc( nLits + 1 );
+            Vec_Int_t * vNetPins  = Vec_IntAlloc( 4 * nLits + 16 );
+            Vec_Flt_t * vNetDx    = Vec_FltAlloc( 4 * nLits + 16 );
+            Vec_Flt_t * vNetDy    = Vec_FltAlloc( 4 * nLits + 16 );
+            double Overflow = 0.0, MaxDens = 0.0;
+            Vec_IntPush( vNetStart, 0 );
+            for ( q = 0; q < nLits; q++ )
+            {
+                Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
+                Vec_Int_t * vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, q );
+                int iDriver;
+                if ( vList == NULL )
+                    continue;
+                iDriver = Vec_IntEntry( vNode2Idx, q );
+                if ( iDriver < 0 )
+                    continue;
+                /* every pin of the net carries the LEF offset of its cell,
+                   so the smooth bounding box follows the pins and not the
+                   cell centers */
+                if ( !fIgnoreIo || pNodes[iDriver].Kind == 0 )
+                {
+                    Vec_IntPush( vNetPins, iDriver );
+                    Vec_FltPush( vNetDx, pNodes[iDriver].Dxo );
+                    Vec_FltPush( vNetDy, pNodes[iDriver].Dyo );
+                }
+                Vec_IntForEachEntry( vList, i, k )
+                {
+                    int iPin = Vec_IntEntry( vPins, k );
+                    if ( fIgnoreIo && pNodes[i].Kind != 0 )
+                        continue;
+                    Vec_IntPush( vNetPins, i );
+                    Vec_FltPush( vNetDx, Phys_PlacePinDx(pNodes + i, iPin) );
+                    Vec_FltPush( vNetDy, Phys_PlacePinDy(pNodes + i, iPin) );
+                }
+                Vec_IntPush( vNetStart, Vec_IntSize(vNetPins) );
+            }
+            Phys_PlaceNesterov( p, pNodes, nNodes, nFree, vFree, vFreeIdx,
+                                Vec_IntArray(vNetStart), Vec_IntArray(vNetPins),
+                                Vec_FltArray(vNetDx), Vec_FltArray(vNetDy), Vec_IntSize(vNetStart)-1,
+                                x0, y0, W, H, TotalArea, Dbu, pPars, &Overflow, &MaxDens );
+            if ( pPars->fVerbose )
+                fprintf( stdout, "Placement: nonlinear placement over %d nets finished at "
+                         "overflow %.3f and maximum bin density %.2f.\n",
+                         Vec_IntSize(vNetStart)-1, Overflow, MaxDens );
+            Vec_IntFree( vNetStart );
+            Vec_IntFree( vNetPins );
+            Vec_FltFree( vNetDx );
+            Vec_FltFree( vNetDy );
+        }
+        if ( pPars->fVerbose )
+            Phys_PlaceReport( "after nonlinear:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
+        if ( iPass + 1 == nPasses )
+        {
+            /* Legalize the spread solution. */
+            nOverlaps = Phys_PlaceLegalize( p, pNodes, vFree, x0, y0, W, H, pPars->fVerbose );
+            if ( pPars->fVerbose )
+                Phys_PlaceReport( "after legal:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
+        }
+        else if ( pPars->nPinMode <= 2 )
+        {
+            double PinBefore, PinAfter;
+            Phys_PlaceAssignPins( pNodes, nNodes, vNode2Idx, vSinks, nLits, x0, y0, W, H,
+                                  Dbu, pPars, &PinBefore, &PinAfter );
+            if ( pPars->fVerbose )
+                fprintf( stdout, "Placement: pin assignment on %s moved the terminals from "
+                         "%.1f um to %.1f um of distance to their targets.\n",
+                         pPars->nPinMode >= 2 ? "four sides" : "the two sides",
+                         PinBefore / Dbu, PinAfter / Dbu );
+        }
     }
-    if ( pPars->fVerbose )
-        Phys_PlaceReport( "after nonlinear:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
-    /* Legalize the spread solution. */
-    nOverlaps = Phys_PlaceLegalize( p, pNodes, vFree, x0, y0, W, H, pPars->fVerbose );
-    if ( pPars->fVerbose )
-        Phys_PlaceReport( "after legal:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
     /* save the result */
     Phys_ManClearPlace( p );
     p->vObjX = Vec_IntStartFull( nObjs );

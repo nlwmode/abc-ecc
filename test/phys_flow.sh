@@ -53,7 +53,10 @@
 #   from the LEF routing layer and a default capacitance.
 #   STA_ARGS adds options to every timing analysis, for example
 #   STA_ARGS="-m" to use the minimum spanning tree instead of the
-#   Steiner tree as the wire model.
+#   Steiner tree as the wire model.  PLACE_ARGS adds options to every
+#   placement, for example PLACE_ARGS="-p 0" to keep the PIs and POs in
+#   object order on the two sides instead of assigning every terminal to
+#   the side and the slot where its logic is (the default).
 
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -101,6 +104,7 @@ case $MODE in
 esac
 MAPCMD="$MAPCMD ${MAP_ARGS:-}"
 STACMD="&phys_sta ${STA_ARGS:-}"
+PLACECMD="&phys_place -v ${PLACE_ARGS:-}"
 
 if [ $# -gt 0 ]; then
     designs=("$@")
@@ -138,10 +142,10 @@ for d in "${designs[@]}"; do
     # and time them, and only then map with the physical cut ranking.  Every
     # iteration maps again on the placement of the mapped cells, which is
     # the physical feedback of the flow.
-    cmd="$cmd; &phys_start; &read $d; &phys_bind; &phys_place -v; $STACMD"
+    cmd="$cmd; &phys_start; &read $d; &phys_bind; $PLACECMD; $STACMD"
     cmd="$cmd; &phys_dump -o $WS -t it0"
     for i in $(seq 1 "$ITER"); do
-        cmd="$cmd; $MAPCMD; &phys_place -v; $STACMD; &phys_dump -o $WS -t it$i"
+        cmd="$cmd; $MAPCMD; $PLACECMD; $STACMD; &phys_dump -o $WS -t it$i"
     done
     if [ "$NETLIST" = 1 ]; then
         # &put turns the mapped Gia into an ABC network and write_verilog
