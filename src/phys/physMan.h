@@ -113,6 +113,15 @@ extern int          Phys_ManLitNum( Phys_Man_t * p );
 extern int          Phys_ManLitIsCell( Phys_Man_t * p, int iLit );
 extern Phys_LibCell_t * Phys_ManLitCell( Phys_Man_t * p, int iLit );
 extern Vec_Ptr_t *  Phys_ManLitPins( Phys_Man_t * p, int iLit );
+/* Pin geometry from the LEF macro of the cell instance.  The pin index is
+   the input index in fanin order, or negative for the output pin.  The
+   offset is from the cell center in DBU and points at the middle of the
+   largest metal rectangle of the pin, so it stays on the pin's metal even
+   for staircase-shaped ports; it is zero when the macro or the pin is
+   missing, so the cell center remains the fallback anchor. */
+extern Phys_LefMacro_t * Phys_ManLitMacro( Phys_Man_t * p, int iLit );
+extern Phys_LefPin_t *   Phys_ManLitLefPin( Phys_Man_t * p, int iLit, int k );
+extern int          Phys_ManLitPinOffset( Phys_Man_t * p, int iLit, int k, int * pDx, int * pDy );
 extern int          Phys_ManLitFaninNum( Phys_Man_t * p, Gia_Man_t * pGia, int iLit );
 extern int          Phys_ManLitFaninLit( Phys_Man_t * p, Gia_Man_t * pGia, int iLit, int k );
 /* literal of the instance that drives an arbitrary signal literal */

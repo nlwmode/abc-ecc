@@ -19,15 +19,24 @@
                    <dir>/<design>/<tag>.routability.svg  routability picture
                    <dir>/<design>/snapshots.txt   tags written so far
 
-               The placement SVG has three layers: a blue density heat map
-               of the core, the standard cells as translucent boxes, and
-               the longest nets drawn as thin lines.  When &phys_sta has
-               run, the critical path it traced is drawn on top of them as
-               a thick saturated-magenta line with a white halo, its cells
-               only lightly tinted, so the line is what stands out against
-               the density and congestion colours; critical_path.csv lists the
-               path objects in order with their positions, arrival,
-               required time and slack.  The routability SVG
+               The placement SVG has four layers: a blue density heat map
+               of the core, the standard cells as translucent boxes, the
+               longest nets drawn as thin lines, and the LEF metal shapes
+               of the pins those nets reach.  The cell boxes are the LEF
+               macro sizes, and the nets run from the output pin of the
+               driver to the input pin of every sink, not from the cell
+               centers; the pin rectangles are the real PORT geometry of
+               the macro, so a wide cell shows its pins spread over its
+               shape, and every wire ends at the middle of the largest
+               metal piece of its pin, which is the anchor the placer and
+               the timing analysis use as well.  When &phys_sta has run,
+               the critical path it traced is drawn on top of them as a
+               thick saturated-magenta line with a white halo, pin to
+               pin, its cells only lightly tinted, so the line is what
+               stands out against the density and congestion colours;
+               critical_path.csv lists the path
+               objects in order with their positions, arrival, required
+               time and slack.  The routability SVG
                is a separate RUDY (rectangular uniform wire density) map:
                every net contributes HPWL/(bbox area) to the bins of its
                bounding box, and the resulting wire demand is divided by

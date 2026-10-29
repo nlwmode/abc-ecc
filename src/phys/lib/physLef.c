@@ -218,15 +218,23 @@ static void Lef_PinComputeCenter( Phys_LefPin_t * pPin, Phys_LefMacro_t * pMacro
 {
     if ( Vec_IntSize(pPin->vRects) > 0 )
     {
-        int k, x1 = ABC_INFINITY, y1 = ABC_INFINITY, x2 = -ABC_INFINITY, y2 = -ABC_INFINITY;
+        /* The anchor of a pin is the middle of its largest metal
+           rectangle.  A pin often consists of several staircase or
+           L-shaped pieces, and the middle of their bounding box can
+           fall outside the metal, so the largest piece is used. */
+        int k, x1 = 0, y1 = 0, x2 = 0, y2 = 0, Best = -1;
         for ( k = 0; k < Vec_IntSize(pPin->vRects); k += 4 )
         {
             int rx1 = Vec_IntEntry(pPin->vRects, k+0);
             int ry1 = Vec_IntEntry(pPin->vRects, k+1);
             int rx2 = Vec_IntEntry(pPin->vRects, k+2);
             int ry2 = Vec_IntEntry(pPin->vRects, k+3);
-            x1 = Abc_MinInt( x1, rx1 ); y1 = Abc_MinInt( y1, ry1 );
-            x2 = Abc_MaxInt( x2, rx2 ); y2 = Abc_MaxInt( y2, ry2 );
+            int Area = (rx2 - rx1) * (ry2 - ry1);
+            if ( Best < 0 || Area > Best )
+            {
+                Best = Area;
+                x1 = rx1; y1 = ry1; x2 = rx2; y2 = ry2;
+            }
         }
         pPin->x = (x1 + x2) / 2;
         pPin->y = (y1 + y2) / 2;

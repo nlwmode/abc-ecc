@@ -691,6 +691,71 @@ static Phys_LibCell_t * Abc_PhysVirtualCell( Phys_Lib_t * pLib )
 
 /**Function*************************************************************
 
+  Synopsis    [Collects which literal phases the fanouts demand]
+
+  Description [For every Gia object, vDemand[i] has bit 0 set when some
+               fanout reads the positive literal of node i and bit 1 when
+               some fanout reads the complemented literal.  The binder
+               uses it to pick the cheaper of the two supergate phases.]
+
+  SideEffects []
+
+***********************************************************************/
+static void Abc_PhysDemandMark( Vec_Int_t * vDemand, int iLit )
+{
+    int iObj = Abc_Lit2Var( iLit );
+    if ( iObj <= 0 || iObj >= Vec_IntSize(vDemand) )
+        return;
+    Vec_IntWriteEntry( vDemand, iObj, Vec_IntEntry(vDemand, iObj) | (1 << Abc_LitIsCompl(iLit)) );
+}
+
+static void Abc_PhysDemandPhases( Gia_Man_t * pGia, Vec_Int_t * vDemand )
+{
+    Gia_Obj_t * pObj;
+    int i;
+    Gia_ManForEachObj( pGia, pObj, i )
+    {
+        if ( Gia_ObjIsAnd(pObj) )
+        {
+            Abc_PhysDemandMark( vDemand, Gia_ObjFaninLit0p(pGia, pObj) );
+            Abc_PhysDemandMark( vDemand, Gia_ObjFaninLit1p(pGia, pObj) );
+            if ( Gia_ObjIsMuxId(pGia, i) )
+                Abc_PhysDemandMark( vDemand, Gia_ObjFaninLit2p(pGia, pObj) );
+        }
+        else if ( Gia_ObjIsCo(pObj) )
+            Abc_PhysDemandMark( vDemand, Gia_ObjFaninLit0p(pGia, pObj) );
+    }
+}
+
+/**Function*************************************************************
+
+  Synopsis    [Picks the output phase of the supergate of an AIG node]
+
+  Description [When only one literal phase is read, the supergate drives
+               that phase and the pattern is realized without an extra
+               inverter.  When both phases are read, the cheaper of the
+               two supergates is used; the second phase is then read from
+               the same driver, which is exact for placement and timing
+               because inverting a net changes neither its geometry nor
+               its arrival time.]
+
+  SideEffects []
+
+***********************************************************************/
+static int Abc_PhysPickPhase( Phys_Lib_t * pLib, int p0, int p1, int Demand )
+{
+    Phys_LibCell_t * pPos = Phys_SuperCell( pLib, p0, p1, 0 );
+    Phys_LibCell_t * pNeg = Phys_SuperCell( pLib, p0, p1, 1 );
+    if ( Demand == 2 )
+        return 1;
+    if ( Demand != 3 || pPos == NULL || pNeg == NULL )
+        return 0;
+    return pNeg->Area < pPos->Area ? 1 : 0;
+}
+
+
+/**Function*************************************************************
+
   Synopsis    [Binds every AIG node to a virtual cell before mapping]
 
   Description [The mapping is not available yet, but &phys_place and
@@ -708,12 +773,12 @@ static int Abc_PhysBindVirtual( Abc_Frame_t * pAbc, const char * pCellName, int 
 {
     Phys_Man_t * pMan = (Phys_Man_t *)pAbc->pPhysMan;
     Gia_Man_t * pGia = pAbc->pGia;
+    Phys_Lib_t * pLib = (Phys_Lib_t *)pMan->pLib;
     Phys_LibCell_t * pCell = NULL;
     Phys_LefMacro_t * pMacro = NULL;
-    Phys_LibPin_t * pPin;
-    Vec_Ptr_t * vPins;
+    Vec_Int_t * vDemand = NULL;
     int nObjs = Gia_ManObjNum( pGia );
-    int i, k, nBound = 0, nBuf = 0, nMux = 0;
+    int i, k, nBound = 0, nBuf = 0, nMux = 0, fSuper = 0;
     if ( pCellName != NULL )
     {
         int nIn, nOut, fArc;
@@ -738,46 +803,72 @@ static int Abc_PhysBindVirtual( Abc_Frame_t * pAbc, const char * pCellName, int 
         }
     }
     else
-        pCell = Abc_PhysVirtualCell( (Phys_Lib_t *)pMan->pLib );
-    if ( pCell == NULL )
+    {
+        int nSuper = Phys_SuperBuild( pLib, pMan->pLef );
+        if ( nSuper == 8 )
+            fSuper = 1;
+        else
+        {
+            Abc_Print( 0, "Supergates: the library realizes %d of the 8 AIG patterns; "
+                          "every node is modeled by one cell instead.\n", nSuper );
+            pCell = Abc_PhysVirtualCell( pLib );
+        }
+    }
+    if ( !fSuper && pCell == NULL )
     {
         Abc_Print( -1, "The Liberty library has no two-input combinational cell to model the AIG nodes.\n" );
         return 1;
     }
     Phys_ManResize( pMan, 2 * nObjs );
     Phys_ManLitResize( pMan, 2 * nObjs, 0 );
-    if ( pMan->pLef != NULL )
+    if ( !fSuper && pMan->pLef != NULL )
     {
         pMacro = Phys_LefFindMacro( pMan->pLef, pCell->pName );
         if ( pMacro != NULL )
             pCell->MacroId = pMacro->Id;
     }
-    vPins = Vec_PtrAlloc( 2 );
-    Vec_PtrForEachEntry( Phys_LibPin_t *, pCell->vPins, pPin, k )
-        if ( pPin->Dir == 0 )
-            Vec_PtrPush( vPins, pPin );
-    assert( Vec_PtrSize(vPins) == 2 );
+    if ( fSuper )
+    {
+        vDemand = Vec_IntStart( nObjs );
+        Abc_PhysDemandPhases( pGia, vDemand );
+    }
     for ( i = 1; i < nObjs; i++ )
     {
         Gia_Obj_t * pObj = Gia_ManObj( pGia, i );
+        Phys_LibCell_t * pCellNode = pCell;
         Vec_Ptr_t * vPinsCopy;
+        Phys_LibPin_t * pPin;
+        int nPins = 0;
         if ( !Gia_ObjIsAnd(pObj) )
             continue;
         if ( Gia_ObjIsBuf(pObj) )
             nBuf++;
         else if ( Gia_ObjIsMuxId(pGia, i) )
             nMux++;
-        vPinsCopy = Vec_PtrAlloc( Vec_PtrSize(vPins) );
-        for ( k = 0; k < Vec_PtrSize(vPins); k++ )
-            Vec_PtrPush( vPinsCopy, Vec_PtrEntry(vPins, k) );
-        Vec_PtrWriteEntry( pMan->vObjToCell, i, pCell );
+        if ( fSuper )
+        {
+            int p0 = Gia_ObjFaninC0(pObj);
+            int p1 = Gia_ObjIsBuf(pObj) ? 0 : Gia_ObjFaninC1(pObj);
+            int q  = Abc_PhysPickPhase( pLib, p0, p1, Vec_IntEntry(vDemand, i) );
+            pCellNode = Phys_SuperCell( pLib, p0, p1, q );
+            assert( pCellNode != NULL );
+        }
+        vPinsCopy = Vec_PtrAlloc( 2 );
+        Vec_PtrForEachEntry( Phys_LibPin_t *, pCellNode->vPins, pPin, k )
+            if ( pPin->Dir == 0 )
+                Vec_PtrPush( vPinsCopy, pPin ), nPins++;
+        assert( nPins == 2 );
+        (void)nPins;
+        Vec_PtrWriteEntry( pMan->vObjToCell, i, pCellNode );
         /* the virtual cell drives the positive literal of the AIG node;
            the pins are owned by the literal array */
-        Vec_PtrWriteEntry( pMan->vLitToCell, 2 * i, pCell );
+        Vec_PtrWriteEntry( pMan->vLitToCell, 2 * i, pCellNode );
         Vec_PtrWriteEntry( pMan->vLitToPins, 2 * i, vPinsCopy );
         nBound++;
     }
-    Vec_PtrFree( vPins );
+    Vec_IntFreeP( &vDemand );
+    if ( fVerbose && fSuper )
+        Phys_SuperPrint( pLib, pMan->pLef );
     if ( fVerbose && pMacro != NULL )
         Abc_Print( 1, "Virtual cell \"%s\": LEF macro %d x %d DBU.\n",
                    pCell->pName, pMacro->Width, pMacro->Height );
@@ -787,8 +878,12 @@ static int Abc_PhysBindVirtual( Abc_Frame_t * pAbc, const char * pCellName, int 
         Abc_Print( 0, "Binding: the virtual two-input cell does not model the select input of "
                       "%d mux node(s); the placement sees all three fanins, the timing analysis "
                       "sees only two. Run \"&phys_map\" before relying on the mux timing.\n", nMux );
-    Abc_Print( 1, "Bound %d AIG nodes to the virtual cell \"%s\" (%.3f um^2); "
-                  "the network is mapped by \"&phys_map\".\n", nBound, pCell->pName, pCell->Area );
+    if ( fSuper )
+        Abc_Print( 1, "Bound %d AIG nodes to the eight supergate patterns of the library; "
+                      "the network is mapped by \"&phys_map\".\n", nBound );
+    else
+        Abc_Print( 1, "Bound %d AIG nodes to the virtual cell \"%s\" (%.3f um^2); "
+                      "the network is mapped by \"&phys_map\".\n", nBound, pCell->pName, pCell->Area );
     return 0;
 }
 
@@ -1003,7 +1098,12 @@ usage:
                solver provides the starting point; the RePlAce/DREAMPlace
                nonlinear placement then minimizes the log-sum-exp
                wirelength plus an electrostatic density penalty, and the
-               result is legalized into the rows.]
+               result is legalized into the rows.  The wirelength is taken
+               between the LEF pin shapes of the cells: a net starts at
+               the output pin of its driver and ends at the input pin of
+               every sink, so the cell shapes and the pin positions of the
+               LEF macro affect where the cells are placed, not just the
+               cell centers.]
 
   SideEffects []
 
@@ -1182,9 +1282,13 @@ usage:
   Description [Writes a snapshot of the current placement into a debug
                workspace: a picture of the placement, the cell and net
                tables, the bin density, the row occupancy, and a record
-               in the per-design log.  When "&phys_sta" has run, the
-               critical path is traced and drawn in saturated magenta on
-               top of the cells, and listed in critical_path.csv.  See
+               in the per-design log.  The picture draws the cell shapes
+               from the LEF and anchors every net at the LEF pins: the
+               wires start at the output pin of the driver and end at the
+               input pin of each sink, and the pin metal shapes are drawn
+               on top.  When "&phys_sta" has run, the critical path is
+               traced and drawn in saturated magenta on top of the cells,
+               pin to pin, and listed in critical_path.csv.  See
                phys/place/physDump.h for the layout of the workspace.]
 
   SideEffects [Creates directories and files]

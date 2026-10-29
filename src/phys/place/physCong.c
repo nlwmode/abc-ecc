@@ -130,19 +130,17 @@ typedef struct Phys_CongBox_t_
     int   nSinks;
 } Phys_CongBox_t;
 
-static void Phys_CongNetAdd( Phys_CongBox_t * pBox, float * pX, float * pY, int iDriver, int iSink )
+static void Phys_CongNetAdd( Phys_CongBox_t * pBox, float x, float y, int iDriver )
 {
     Phys_CongBox_t * p = pBox + iDriver;
-    if ( pX[iSink] < 0.0f || pY[iSink] < 0.0f )
-        return;
     if ( p->nSinks == 0 )
-        p->X0 = p->X1 = pX[iSink], p->Y0 = p->Y1 = pY[iSink];
+        p->X0 = p->X1 = x, p->Y0 = p->Y1 = y;
     else
     {
-        p->X0 = Abc_MinFloat( p->X0, pX[iSink] );
-        p->X1 = Abc_MaxFloat( p->X1, pX[iSink] );
-        p->Y0 = Abc_MinFloat( p->Y0, pY[iSink] );
-        p->Y1 = Abc_MaxFloat( p->Y1, pY[iSink] );
+        p->X0 = Abc_MinFloat( p->X0, x );
+        p->X1 = Abc_MaxFloat( p->X1, x );
+        p->Y0 = Abc_MinFloat( p->Y0, y );
+        p->Y1 = Abc_MaxFloat( p->Y1, y );
     }
     p->nSinks++;
 }
@@ -207,8 +205,12 @@ Phys_Cong_t * Phys_CongBuild( Phys_Man_t * pMan, Gia_Man_t * pGia, int nGrid )
         for ( k = 0; k < nFans; k++ )
         {
             int d = Phys_ManLitFaninLit( pMan, pGia, i, k );
-            if ( d > 1 && d < nLits )
-                Phys_CongNetAdd( pBoxes, pX, pY, d, i );
+            int dx = 0, dy = 0;
+            if ( d <= 1 || d >= nLits || pX[i] < 0.0f || pY[i] < 0.0f )
+                continue;
+            /* the sink end of the net is its input pin */
+            Phys_ManLitPinOffset( pMan, i, k, &dx, &dy );
+            Phys_CongNetAdd( pBoxes, pX[i] + (float)dx / Dbu, pY[i] + (float)dy / Dbu, d );
         }
     }
     for ( i = 1; i < nObjs; i++ )
@@ -218,8 +220,8 @@ Phys_Cong_t * Phys_CongBuild( Phys_Man_t * pMan, Gia_Man_t * pGia, int nGrid )
         if ( !Gia_ObjIsPo(pGia, pObj) )
             continue;
         d = Phys_ManDriverLit( pMan, pGia, Gia_ObjFaninLit0(pObj, i) );
-        if ( d > 1 && d < nLits )
-            Phys_CongNetAdd( pBoxes, pX, pY, d, 2*i );
+        if ( d > 1 && d < nLits && pX[2*i] >= 0.0f )
+            Phys_CongNetAdd( pBoxes, pX[2*i], pY[2*i], d );
     }
     /* count the nets that have a driver position and at least one sink */
     for ( i = 0; i < nLits; i++ )
@@ -266,10 +268,16 @@ Phys_Cong_t * Phys_CongBuild( Phys_Man_t * pMan, Gia_Man_t * pGia, int nGrid )
         for ( i = 0; i < nLits; i++ )
             if ( pBoxes[i].nSinks > 0 && pX[i] >= 0.0f && pY[i] >= 0.0f )
             {
-                pBx0[n] = Abc_MinFloat( pBoxes[i].X0, pX[i] );
-                pBx1[n] = Abc_MaxFloat( pBoxes[i].X1, pX[i] );
-                pBy0[n] = Abc_MinFloat( pBoxes[i].Y0, pY[i] );
-                pBy1[n] = Abc_MaxFloat( pBoxes[i].Y1, pY[i] );
+                /* the driver end of the net is its output pin */
+                int dx = 0, dy = 0;
+                float px = pX[i], py = pY[i];
+                Phys_ManLitPinOffset( pMan, i, -1, &dx, &dy );
+                px += (float)dx / Dbu;
+                py += (float)dy / Dbu;
+                pBx0[n] = Abc_MinFloat( pBoxes[i].X0, px );
+                pBx1[n] = Abc_MaxFloat( pBoxes[i].X1, px );
+                pBy0[n] = Abc_MinFloat( pBoxes[i].Y0, py );
+                pBy1[n] = Abc_MaxFloat( pBoxes[i].Y1, py );
                 pHpwl[n] = (pBx1[n] - pBx0[n]) + (pBy1[n] - pBy0[n]);
                 n++;
             }

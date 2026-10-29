@@ -294,7 +294,7 @@ static Phys_Template_t * Lib_FindTemplateByBase( Phys_Lib_t * pLib, const char *
     return NULL;
 }
 
-static Phys_Surface_t * Phys_SurfaceAlloc( void )
+Phys_Surface_t * Phys_SurfaceAlloc( void )
 {
     Phys_Surface_t * p = ABC_CALLOC( Phys_Surface_t, 1 );
     p->vIndex0 = Vec_FltAlloc( 8 );
@@ -303,7 +303,7 @@ static Phys_Surface_t * Phys_SurfaceAlloc( void )
     return p;
 }
 
-static void Phys_SurfaceFree( Phys_Surface_t * p )
+void Phys_SurfaceFree( Phys_Surface_t * p )
 {
     if ( p == NULL ) return;
     Vec_FltFree( p->vIndex0 );
@@ -391,12 +391,15 @@ static Phys_LibCell_t * Phys_LibCellAlloc( const char * pName )
     return p;
 }
 
-static void Phys_LibCellFree( Phys_LibCell_t * p )
+void Phys_LibCellFree( Phys_LibCell_t * p )
 {
     Phys_LibPin_t * pPin;
     int i;
     if ( p == NULL ) return;
     ABC_FREE( p->pName );
+    ABC_FREE( p->pFormula );
+    ABC_FREE( p->pPinDx );
+    ABC_FREE( p->pPinDy );
     Vec_PtrForEachEntry( Phys_LibPin_t *, p->vPins, pPin, i )
         Phys_LibPinFree( pPin );
     Vec_PtrFree( p->vPins );
@@ -872,8 +875,9 @@ Phys_Lib_t * Phys_LibertyRead( const char * pFileName, int fVerbose )
 
     pLib = ABC_CALLOC( Phys_Lib_t, 1 );
     Phys_UnitsInit( &pLib->Units );
-    pLib->vCells     = Vec_PtrAlloc( 1024 );
-    pLib->vTemplates = Vec_PtrAlloc( 64 );
+    pLib->vCells      = Vec_PtrAlloc( 1024 );
+    pLib->vTemplates  = Vec_PtrAlloc( 64 );
+    pLib->vSuperCells = Vec_PtrAlloc( 8 );
 
     memset( g, 0, sizeof(*g) );
     g->pLib   = pLib;
@@ -931,9 +935,12 @@ void Phys_LibFree( Phys_Lib_t ** pp )
     *pp = NULL;
     Vec_PtrForEachEntry( Phys_LibCell_t *, p->vCells, pCell, i )
         Phys_LibCellFree( pCell );
+    Vec_PtrForEachEntry( Phys_LibCell_t *, p->vSuperCells, pCell, i )
+        Phys_LibCellFree( pCell );
     Vec_PtrForEachEntry( Phys_Template_t *, p->vTemplates, pTemp, i )
         Phys_TemplateFree( pTemp );
     Vec_PtrFree( p->vCells );
+    Vec_PtrFree( p->vSuperCells );
     Vec_PtrFree( p->vTemplates );
     Vec_IntFreeP( &p->vCellHash );
     ABC_FREE( p->pName );
@@ -943,11 +950,18 @@ void Phys_LibFree( Phys_Lib_t ** pp )
 
 Phys_LibCell_t * Phys_LibFindCell( Phys_Lib_t * p, const char * pName )
 {
-    int Id;
+    int Id, i;
+    Phys_LibCell_t * pCell;
     if ( p == NULL || pName == NULL )
         return NULL;
     Id = Phys_HashFind( p->vCellHash, p->vCells, pName );
-    return Id >= 0 ? (Phys_LibCell_t *)Vec_PtrEntry(p->vCells, Id) : NULL;
+    if ( Id >= 0 )
+        return (Phys_LibCell_t *)Vec_PtrEntry( p->vCells, Id );
+    /* supergates are created after the hash was built */
+    Vec_PtrForEachEntry( Phys_LibCell_t *, p->vSuperCells, pCell, i )
+        if ( pCell != NULL && !strcmp( pCell->pName, pName ) )
+            return pCell;
+    return NULL;
 }
 
 Phys_LibPin_t * Phys_LibCellFindPin( Phys_LibCell_t * pCell, const char * pName )

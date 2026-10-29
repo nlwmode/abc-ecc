@@ -67,6 +67,7 @@ typedef struct Phys_LibPin_t_
 typedef struct Phys_LibCell_t_
 {
     char *      pName;
+    char *      pFormula;   /* supergate structure, NULL for library cells */
     float       Area;       /* um^2                                      */
     int         fSequential;
     int         fDontUse;
@@ -76,6 +77,14 @@ typedef struct Phys_LibCell_t_
     Vec_Ptr_t * vArcs;      /* all Phys_TimingArc_t * (owned by pins)    */
     int         CellId;     /* Mio cell id, -1 if unbound                */
     int         MacroId;    /* LEF macro id, -1 if unbound               */
+    /* geometry of a synthetic supergate, which has no LEF macro; zero
+       when the cell is a library cell */
+    int         Width;      /* DBU                                       */
+    int         Height;
+    int *       pPinDx;     /* input-pin offsets from the center, DBU    */
+    int *       pPinDy;
+    int         DxOut;      /* output-pin offset from the center, DBU    */
+    int         DyOut;
 } Phys_LibCell_t;
 
 typedef struct Phys_Template_t_
@@ -94,6 +103,8 @@ typedef struct Phys_Lib_t_
     Vec_Ptr_t *   vCells;      /* Phys_LibCell_t *                        */
     Vec_Ptr_t *   vTemplates;  /* Phys_Template_t *                       */
     Vec_Int_t *   vCellHash;
+    Vec_Ptr_t *   vSuperCells; /* eight supergates, by pattern index      */
+    int           fSuperBuilt; /* set when physSuper.c has run            */
 } Phys_Lib_t;
 
 /* reading / memory */
@@ -111,6 +122,11 @@ extern Phys_TimingArc_t * Phys_LibCellFindArc( Phys_LibCell_t * pCell, const cha
 /* table lookup (bilinear interpolation, clamped at the table boundary) */
 extern float             Phys_SurfaceLookup( Phys_Surface_t * p, float v0, float v1 );
 extern float             Phys_SurfaceLookupConst( Phys_Surface_t * p, int i0, int i1 );
+
+/* surface allocation, used by physSuper.c to compose timing arcs */
+extern Phys_Surface_t *  Phys_SurfaceAlloc( void );
+extern void              Phys_SurfaceFree( Phys_Surface_t * p );
+extern void              Phys_LibCellFree( Phys_LibCell_t * p );
 
 /* reporting */
 extern void              Phys_LibPrint( Phys_Lib_t * p );

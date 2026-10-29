@@ -46,6 +46,7 @@ typedef struct Phys_DumpNet_t_
 {
     int        Driver;   /* Gia object driving the net       */
     Vec_Int_t * vSinks;  /* Gia objects of the sinks         */
+    Vec_Int_t * vPins;   /* input pin of each sink, -1 for a PO */
     float      X0, Y0, X1, Y1;
     float      Hpwl;
 } Phys_DumpNet_t;
@@ -282,35 +283,115 @@ static int Phys_DumpObjPos( Phys_Man_t * p, int iObj, float Dbu, float * pX, flo
     return 1;
 }
 
+/* the cell instance that gave an object its position: the positive phase
+   when it is mapped, otherwise the negative one */
+static int Phys_DumpObjLit( Phys_Man_t * p, int iObj )
+{
+    if ( iObj <= 0 || 2 * iObj + 1 >= Phys_ManLitNum(p) )
+        return -1;
+    if ( Phys_ManLitIsCell( p, 2 * iObj ) )
+        return 2 * iObj;
+    if ( Phys_ManLitIsCell( p, 2 * iObj + 1 ) )
+        return 2 * iObj + 1;
+    return -1;
+}
+
+/* the position of a pin of an object: negative pin index selects the
+   output pin, a non-negative one an input pin in fanin order.  When the
+   pin has no LEF geometry the cell center is the anchor. */
+static int Phys_DumpObjPinPos( Phys_Man_t * p, int iObj, int iPin, float Dbu,
+                               float * pX, float * pY )
+{
+    int iLit = Phys_DumpObjLit( p, iObj ), dx = 0, dy = 0;
+    if ( !Phys_DumpObjPos( p, iObj, Dbu, pX, pY ) )
+        return 0;
+    if ( iLit >= 0 )
+        Phys_ManLitPinOffset( p, iLit, iPin, &dx, &dy );
+    *pX += (float)dx / Dbu;
+    *pY += (float)dy / Dbu;
+    return 1;
+}
+
+/* the input pin of iSinkObj that iDriverObj drives, or -1 when the two
+   objects are not directly connected */
+static int Phys_DumpFaninPin( Phys_Man_t * p, Gia_Man_t * pGia, int iDriverObj, int iSinkObj )
+{
+    int k, nFans = Phys_ManObjFaninNum( p, pGia, iSinkObj );
+    for ( k = 0; k < nFans; k++ )
+        if ( Abc_Lit2Var(Phys_ManObjFaninLit( p, pGia, iSinkObj, k )) == iDriverObj )
+            return k;
+    return -1;
+}
+
+/* the LEF metal shapes of one pin, mapped into the picture.  Drawing the
+   real pin geometry makes it obvious where the wires of a net start and
+   end, and shows that a wide cell has its pins spread over its shape. */
+static void Phys_DumpPinRects( FILE * f, Phys_Man_t * p, int iObj, int iPin,
+                               float Dbu, float MarginX, float TopY,
+                               float X0, float Y0, float H, float Scale )
+{
+    int iLit = Phys_DumpObjLit( p, iObj ), k;
+    Phys_LefMacro_t * pMacro;
+    Phys_LefPin_t * pPin;
+    float Cx, Cy, Ox, Oy;
+    if ( iLit < 0 || !Phys_DumpObjPos( p, iObj, Dbu, &Cx, &Cy ) )
+        return;
+    pMacro = Phys_ManLitMacro( p, iLit );
+    pPin   = Phys_ManLitLefPin( p, iLit, iPin );
+    if ( pMacro == NULL || pPin == NULL || Vec_IntSize(pPin->vRects) == 0 )
+        return;
+    /* the macro origin of the pin coordinates, in um */
+    Ox = Cx - ((float)pMacro->OriginX + 0.5f * (float)pMacro->Width) / Dbu;
+    Oy = Cy - ((float)pMacro->OriginY + 0.5f * (float)pMacro->Height) / Dbu;
+    for ( k = 0; k < Vec_IntSize(pPin->vRects); k += 4 )
+    {
+        float x1 = Ox + (float)Vec_IntEntry(pPin->vRects, k+0) / Dbu;
+        float y1 = Oy + (float)Vec_IntEntry(pPin->vRects, k+1) / Dbu;
+        float x2 = Ox + (float)Vec_IntEntry(pPin->vRects, k+2) / Dbu;
+        float y2 = Oy + (float)Vec_IntEntry(pPin->vRects, k+3) / Dbu;
+        fprintf( f, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\"/>\n",
+                 MarginX + (x1 - X0) * Scale, TopY + (Y0 + H - y2) * Scale,
+                 (x2 - x1) * Scale, (y2 - y1) * Scale );
+    }
+}
+
 /* the edges of the critical path: one line per pair of consecutive path
-   objects that both have a placement position.  The style lives on the
+   objects that both have a placement position, from the output pin of
+   the driver to the input pin of the sink.  The style lives on the
    enclosing group, so the same helper draws the halo and the stroke. */
-static void Phys_DumpPathEdges( FILE * f, Phys_Man_t * p, float Dbu, float MarginX,
+static void Phys_DumpPathEdges( FILE * f, Phys_Man_t * p, Gia_Man_t * pGia, float Dbu, float MarginX,
                                 float TopY, float X0, float Y0, float H, float Scale )
 {
-    float PrevX = 0.0f, PrevY = 0.0f;
-    int fPrev = 0, k, iObj;
+    int fPrev = 0, k, iObj, iPrevObj = -1;
     if ( p->vPathObjs == NULL )
         return;
     for ( k = 0; k < Vec_IntSize(p->vPathObjs); k++ )
     {
-        float Px, Py;
+        float Cx, Cy, Px, Py, Sx, Sy;
+        int iPin;
         iObj = Vec_IntEntry( p->vPathObjs, k );
-        if ( !Phys_DumpObjPos( p, iObj, Dbu, &Px, &Py ) )
+        if ( !Phys_DumpObjPos( p, iObj, Dbu, &Cx, &Cy ) )
             /* an object inside a mapped cell has no position of its own;
                the path just passes through it to the next placed object */
             continue;
         if ( fPrev )
+        {
+            Phys_DumpObjPinPos( p, iPrevObj, -1, Dbu, &Px, &Py );
+            iPin = Phys_DumpFaninPin( p, pGia, iPrevObj, iObj );
+            if ( iPin >= 0 )
+                Phys_DumpObjPinPos( p, iObj, iPin, Dbu, &Sx, &Sy );
+            else
+                Sx = Cx, Sy = Cy;
             fprintf( f, "<line x1=\"%.2f\" y1=\"%.2f\" x2=\"%.2f\" y2=\"%.2f\"/>\n",
-                     MarginX + (PrevX - X0) * Scale, TopY + (Y0 + H - PrevY) * Scale,
-                     MarginX + (Px - X0) * Scale,    TopY + (Y0 + H - Py) * Scale );
-        PrevX = Px;
-        PrevY = Py;
+                     MarginX + (Px - X0) * Scale, TopY + (Y0 + H - Py) * Scale,
+                     MarginX + (Sx - X0) * Scale, TopY + (Y0 + H - Sy) * Scale );
+        }
+        iPrevObj = iObj;
         fPrev = 1;
     }
 }
 
-static void Phys_DumpNetAdd( Vec_Ptr_t * vNets, int iDriver, int iSink )
+static void Phys_DumpNetAdd( Vec_Ptr_t * vNets, int iDriver, int iSink, int iPin )
 {
     Phys_DumpNet_t * pNet;
     if ( iDriver <= 0 )
@@ -321,12 +402,17 @@ static void Phys_DumpNetAdd( Vec_Ptr_t * vNets, int iDriver, int iSink )
         pNet = ABC_CALLOC( Phys_DumpNet_t, 1 );
         pNet->Driver = iDriver;
         pNet->vSinks = Vec_IntAlloc( 4 );
+        pNet->vPins  = Vec_IntAlloc( 4 );
         Vec_PtrWriteEntry( vNets, iDriver, pNet );
     }
-    Vec_IntPushUnique( pNet->vSinks, iSink );
+    if ( Vec_IntFind( pNet->vSinks, iSink ) >= 0 )
+        return;
+    Vec_IntPush( pNet->vSinks, iSink );
+    Vec_IntPush( pNet->vPins, iPin );
 }
 
-/* the same net model as the placer: one net per driver, listing its sinks */
+/* the same net model as the placer: one net per driver, listing its
+   sinks and the input pin every sink uses */
 static Vec_Ptr_t * Phys_DumpBuildNets( Phys_Man_t * p, Gia_Man_t * pGia, int nObjs )
 {
     Vec_Ptr_t * vNets = Vec_PtrStart( nObjs );
@@ -337,14 +423,14 @@ static Vec_Ptr_t * Phys_DumpBuildNets( Phys_Man_t * p, Gia_Man_t * pGia, int nOb
         int nFans;
         if ( Gia_ObjIsPo(pGia, pObj) )
         {
-            Phys_DumpNetAdd( vNets, Abc_Lit2Var(Gia_ObjFaninLit0(pObj, i)), i );
+            Phys_DumpNetAdd( vNets, Abc_Lit2Var(Gia_ObjFaninLit0(pObj, i)), i, -1 );
             continue;
         }
         if ( Vec_PtrEntry(p->vObjToCell, i) == NULL )
             continue;
         nFans = Phys_ManObjFaninNum( p, pGia, i );
         for ( k = 0; k < nFans; k++ )
-            Phys_DumpNetAdd( vNets, Abc_Lit2Var(Phys_ManObjFaninLit( p, pGia, i, k )), i );
+            Phys_DumpNetAdd( vNets, Abc_Lit2Var(Phys_ManObjFaninLit( p, pGia, i, k )), i, k );
     }
     return vNets;
 }
@@ -722,13 +808,14 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
         int fValid = 1;
         if ( pNet == NULL || Vec_IntSize(pNet->vSinks) == 0 )
             continue;
-        if ( !Phys_DumpObjPos( pMan, pNet->Driver, Dbu, &fX, &fY ) )
+        if ( !Phys_DumpObjPinPos( pMan, pNet->Driver, -1, Dbu, &fX, &fY ) )
             continue;
         pNet->X0 = pNet->X1 = fX;
         pNet->Y0 = pNet->Y1 = fY;
         Vec_IntForEachEntry( pNet->vSinks, x, i )
         {
-            if ( !Phys_DumpObjPos( pMan, x, Dbu, &fX, &fY ) )
+            int iPin = Vec_IntEntry( pNet->vPins, i );
+            if ( !Phys_DumpObjPinPos( pMan, x, iPin, Dbu, &fX, &fY ) )
             {
                 fValid = 0;
                 break;
@@ -797,20 +884,25 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
             Vec_IntSize(pMan->vPathObjs) > 1 && Vec_IntSize(pMan->vObjPath) >= nObjs;
     if ( fPath )
     {
-        float PrevX = 0.0f, PrevY = 0.0f;
-        int fPrev = 0;
+        int iPrevObj = -1;
         Vec_IntForEachEntry( pMan->vPathObjs, x, k )
         {
-            float Px, Py;
+            float Px, Py, Sx, Sy;
+            int iPin;
             if ( Vec_PtrEntry(pMan->vObjToCell, x) != NULL )
                 nPathCells++;
             if ( !Phys_DumpObjPos( pMan, x, Dbu, &Px, &Py ) )
                 continue;
-            if ( fPrev )
-                PathLen += fabs( Px - PrevX ) + fabs( Py - PrevY );
-            PrevX = Px;
-            PrevY = Py;
-            fPrev = 1;
+            if ( iPrevObj >= 0 )
+            {
+                /* the same pin-to-pin line the SVG draws */
+                Phys_DumpObjPinPos( pMan, iPrevObj, -1, Dbu, &Sx, &Sy );
+                iPin = Phys_DumpFaninPin( pMan, pGia, iPrevObj, x );
+                if ( iPin >= 0 )
+                    Phys_DumpObjPinPos( pMan, x, iPin, Dbu, &Px, &Py );
+                PathLen += fabs( Px - Sx ) + fabs( Py - Sy );
+            }
+            iPrevObj = x;
         }
     }
     /* the CSV files of this snapshot */
@@ -922,7 +1014,8 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
                     nNets ? pNets[0].Hpwl : 0.0f );
         fprintf( f, "<text x=\"8\" y=\"42\" font-family=\"sans-serif\" font-size=\"11\" fill=\"#52514e\">"
                     "background: cell density per bin (blue, empty to full); "
-                    "boxes: standard cells (translucent); lines: %d longest nets</text>\n", nDrawNets );
+                    "boxes: standard cells (translucent); lines: %d longest nets; "
+                    "teal shapes: LEF pin metal (wires run pin to pin)</text>\n", nDrawNets );
         if ( fCong )
             fprintf( f, "<text x=\"8\" y=\"58\" font-family=\"sans-serif\" font-size=\"11\" fill=\"#898781\">"
                         "routability map: %s.routability.svg, max congestion %.2f</text>\n",
@@ -961,17 +1054,20 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
                      MarginX, TopY + (H - k * (float)pMan->SiteH / Dbu) * Scale,
                      MarginX + CoreW, TopY + (H - k * (float)pMan->SiteH / Dbu) * Scale );
         fprintf( f, "</g>\n" );
-        /* the longest nets */
+        /* the longest nets: from the output pin of the driver to the
+           input pin of every sink, so the wires start where they will be
+           routed, not at the cell centers */
         fprintf( f, "<g id=\"nets\" stroke=\"#52514e\" stroke-opacity=\"0.16\" stroke-width=\"0.9\">\n" );
         for ( i = 0; i < nDrawNets; i++ )
         {
             float Dx, Dy;
-            if ( !Phys_DumpObjPos( pMan, pNets[i].Driver, Dbu, &Dx, &Dy ) )
+            if ( !Phys_DumpObjPinPos( pMan, pNets[i].Driver, -1, Dbu, &Dx, &Dy ) )
                 continue;
             Vec_IntForEachEntry( pNets[i].vSinks, x, k )
             {
                 float Sx, Sy;
-                if ( !Phys_DumpObjPos( pMan, x, Dbu, &Sx, &Sy ) )
+                int iPin = Vec_IntEntry( pNets[i].vPins, k );
+                if ( !Phys_DumpObjPinPos( pMan, x, iPin, Dbu, &Sx, &Sy ) )
                     continue;
                 fprintf( f, "<line x1=\"%.2f\" y1=\"%.2f\" x2=\"%.2f\" y2=\"%.2f\"/>\n",
                          MarginX + (Dx - X0) * Scale, TopY + (Y0 + H - Dy) * Scale,
@@ -993,6 +1089,36 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
                      MarginX + (pCells[i].X0 - X0) * Scale,
                      TopY + (Y0 + H - pCells[i].Y0 - (float)pCells[i].H / Dbu) * Scale,
                      Cw, Ch );
+        }
+        fprintf( f, "</g>\n" );
+        /* the LEF pin shapes at the ends of the drawn wires, and on the
+           critical path, so the pin-anchored routing is visible */
+        fprintf( f, "<g id=\"pins\" fill=\"#0f5f6b\" fill-opacity=\"0.60\" "
+                    "stroke=\"#0b3f47\" stroke-opacity=\"0.70\" stroke-width=\"0.25\">\n" );
+        for ( i = 0; i < nDrawNets; i++ )
+        {
+            Phys_DumpPinRects( f, pMan, pNets[i].Driver, -1, Dbu, MarginX, TopY, X0, Y0, H, Scale );
+            Vec_IntForEachEntry( pNets[i].vSinks, x, k )
+                Phys_DumpPinRects( f, pMan, x, Vec_IntEntry(pNets[i].vPins, k),
+                                   Dbu, MarginX, TopY, X0, Y0, H, Scale );
+        }
+        if ( fPath )
+        {
+            int iPrevObj = -1;
+            Vec_IntForEachEntry( pMan->vPathObjs, x, k )
+            {
+                int iPin;
+                if ( iPrevObj < 0 )
+                {
+                    iPrevObj = x;
+                    continue;
+                }
+                Phys_DumpPinRects( f, pMan, iPrevObj, -1, Dbu, MarginX, TopY, X0, Y0, H, Scale );
+                iPin = Phys_DumpFaninPin( pMan, pGia, iPrevObj, x );
+                if ( iPin >= 0 )
+                    Phys_DumpPinRects( f, pMan, x, iPin, Dbu, MarginX, TopY, X0, Y0, H, Scale );
+                iPrevObj = x;
+            }
         }
         fprintf( f, "</g>\n" );
         /* the critical path.  The cells it crosses only get a light tint,
@@ -1020,11 +1146,11 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
             fprintf( f, "</g>\n" );
             fprintf( f, "<g id=\"critpath-halo\" stroke=\"#ffffff\" stroke-opacity=\"0.85\" "
                         "stroke-width=\"6\" stroke-linecap=\"round\" fill=\"none\">\n" );
-            Phys_DumpPathEdges( f, pMan, Dbu, MarginX, TopY, X0, Y0, H, Scale );
+            Phys_DumpPathEdges( f, pMan, pGia, Dbu, MarginX, TopY, X0, Y0, H, Scale );
             fprintf( f, "</g>\n" );
             fprintf( f, "<g id=\"critpath\" stroke=\"#c2185b\" stroke-opacity=\"0.95\" "
                         "stroke-width=\"2.8\" stroke-linecap=\"round\" fill=\"none\">\n" );
-            Phys_DumpPathEdges( f, pMan, Dbu, MarginX, TopY, X0, Y0, H, Scale );
+            Phys_DumpPathEdges( f, pMan, pGia, Dbu, MarginX, TopY, X0, Y0, H, Scale );
             fprintf( f, "</g>\n" );
         }
         fprintf( f, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" "
@@ -1121,6 +1247,7 @@ int Phys_DumpRun( Phys_Man_t * pMan, Gia_Man_t * pGia, Phys_DumpPars_t * pPars )
         if ( pNet != NULL )
         {
             Vec_IntFree( pNet->vSinks );
+            Vec_IntFree( pNet->vPins );
             ABC_FREE( pNet );
         }
     Vec_PtrFree( vNets );

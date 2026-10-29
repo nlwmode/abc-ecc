@@ -23,6 +23,13 @@
 ABC_NAMESPACE_IMPL_START
 
 
+/* the fanin count of the library cells; a mux AIG node needs three */
+#define PHYS_PLACE_MAX_PINS 6
+/* pin codes used by the nets: the driver connects through its output
+   pin, a sink through its input pin, and a primary output has no pin */
+#define PHYS_PLACE_PIN_OUT  (-1)
+#define PHYS_PLACE_PIN_NONE (-2)
+
 typedef struct Phys_PNode_t_
 {
     int   Lit;       /* output literal of the cell, or of the PI/PO */
@@ -30,7 +37,39 @@ typedef struct Phys_PNode_t_
     int   Fixed;     /* PIs and POs are fixed                      */
     int   W, H;      /* size in DBU                                */
     float X, Y;      /* center in DBU                              */
+    /* pin offsets from the center, in DBU, from the LEF macro.  A wire
+       starts at the output pin of the driver and ends at the input pin
+       of the sink, not at the centers, so a cell can trade the position
+       of its own pins for length.  The offsets are zero when the macro
+       or the pin is missing, which keeps the previous center model. */
+    float Dx[PHYS_PLACE_MAX_PINS], Dy[PHYS_PLACE_MAX_PINS]; /* inputs */
+    float Dxo, Dyo;                                         /* output */
 } Phys_PNode_t;
+
+/* offset of an input pin from the cell center; a sink without a LEF
+   pin keeps the center, which is the model used before the LEF was */
+static inline float Phys_PlacePinDx( Phys_PNode_t * pNode, int iPin )
+{
+    return iPin >= 0 && iPin < PHYS_PLACE_MAX_PINS ? pNode->Dx[iPin] : 0.0f;
+}
+static inline float Phys_PlacePinDy( Phys_PNode_t * pNode, int iPin )
+{
+    return iPin >= 0 && iPin < PHYS_PLACE_MAX_PINS ? pNode->Dy[iPin] : 0.0f;
+}
+/* position of a pin of a node: PHYS_PLACE_PIN_OUT selects the output
+   pin, a non-negative index the input pin in fanin order */
+static inline float Phys_PlacePinX( Phys_PNode_t * pNode, int iPin )
+{
+    if ( iPin == PHYS_PLACE_PIN_OUT )
+        return pNode->X + pNode->Dxo;
+    return pNode->X + Phys_PlacePinDx( pNode, iPin );
+}
+static inline float Phys_PlacePinY( Phys_PNode_t * pNode, int iPin )
+{
+    if ( iPin == PHYS_PLACE_PIN_OUT )
+        return pNode->Y + pNode->Dyo;
+    return pNode->Y + Phys_PlacePinDy( pNode, iPin );
+}
 
 typedef struct Phys_RowCell_t_
 {
@@ -72,6 +111,14 @@ static void Phys_PlaceCellSize( Phys_Man_t * p, Phys_LibCell_t * pCell, int * pw
     {
         *pw = pMacro->Width;
         *ph = pMacro->Height;
+        return;
+    }
+    /* a supergate has no LEF macro; its footprint is the row of the cells
+       it is composed of */
+    if ( pCell->Width > 0 && pCell->Height > 0 )
+    {
+        *pw = pCell->Width;
+        *ph = pCell->Height;
         return;
     }
     /* fall back to the Liberty area assuming single-row cells */
@@ -340,11 +387,13 @@ static int Phys_CompareByX( const void * a, const void * b )
     return 0;
 }
 
-/* half-perimeter wirelength of the current node positions, in DBU */
-static double Phys_PlaceHpwl( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx, Vec_Ptr_t * vSinks, int nObjs )
+/* half-perimeter wirelength of the current pin positions, in DBU */
+static double Phys_PlaceHpwl( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx,
+                              Vec_Ptr_t * vSinks, Vec_Ptr_t * vSinkPin, int nObjs )
 {
     double TotalHpwl = 0.0;
-    int q, k, Entry;
+    int q, k, Entry, iPin;
+    Vec_Int_t * vPins;
     for ( q = 0; q < nObjs; q++ )
     {
         Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
@@ -355,14 +404,16 @@ static double Phys_PlaceHpwl( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx, Vec_
         iDriver = Vec_IntEntry( vNode2Idx, q );
         if ( iDriver < 0 )
             continue;
-        xMin = xMax = pNodes[iDriver].X;
-        yMin = yMax = pNodes[iDriver].Y;
+        vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, q );
+        xMin = xMax = Phys_PlacePinX( pNodes + iDriver, PHYS_PLACE_PIN_OUT );
+        yMin = yMax = Phys_PlacePinY( pNodes + iDriver, PHYS_PLACE_PIN_OUT );
         Vec_IntForEachEntry( vList, Entry, k )
         {
-            xMin = Abc_MinFloat( xMin, pNodes[Entry].X );
-            xMax = Abc_MaxFloat( xMax, pNodes[Entry].X );
-            yMin = Abc_MinFloat( yMin, pNodes[Entry].Y );
-            yMax = Abc_MaxFloat( yMax, pNodes[Entry].Y );
+            iPin = Vec_IntEntry( vPins, k );
+            xMin = Abc_MinFloat( xMin, Phys_PlacePinX(pNodes + Entry, iPin) );
+            xMax = Abc_MaxFloat( xMax, Phys_PlacePinX(pNodes + Entry, iPin) );
+            yMin = Abc_MinFloat( yMin, Phys_PlacePinY(pNodes + Entry, iPin) );
+            yMax = Abc_MaxFloat( yMax, Phys_PlacePinY(pNodes + Entry, iPin) );
         }
         TotalHpwl += (double)(xMax - xMin) + (double)(yMax - yMin);
     }
@@ -370,10 +421,12 @@ static double Phys_PlaceHpwl( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx, Vec_
 }
 /* wirelength of the internal (free-to-free) nets only, split into x and y */
 static void Phys_PlaceHpwlInternal( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx, Vec_Int_t * vFreeIdx,
-                                    Vec_Ptr_t * vSinks, int nObjs, double * pX, double * pY )
+                                    Vec_Ptr_t * vSinks, Vec_Ptr_t * vSinkPin, int nObjs,
+                                    double * pX, double * pY )
 {
     double HpwlX = 0.0, HpwlY = 0.0;
-    int q, k, Entry;
+    int q, k, Entry, iPin;
+    Vec_Int_t * vPins;
     for ( q = 0; q < nObjs; q++ )
     {
         Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
@@ -387,8 +440,9 @@ static void Phys_PlaceHpwlInternal( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx
         fDriver = Vec_IntEntry( vFreeIdx, iDriver );
         if ( fDriver < 0 )
             continue;
-        xMin = xMax = pNodes[iDriver].X;
-        yMin = yMax = pNodes[iDriver].Y;
+        vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, q );
+        xMin = xMax = Phys_PlacePinX( pNodes + iDriver, PHYS_PLACE_PIN_OUT );
+        yMin = yMax = Phys_PlacePinY( pNodes + iDriver, PHYS_PLACE_PIN_OUT );
         Vec_IntForEachEntry( vList, Entry, k )
         {
             fSink = Vec_IntEntry( vFreeIdx, Entry );
@@ -397,10 +451,11 @@ static void Phys_PlaceHpwlInternal( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx
                 fAnyFixed = 1;
                 break;
             }
-            xMin = Abc_MinFloat( xMin, pNodes[Entry].X );
-            xMax = Abc_MaxFloat( xMax, pNodes[Entry].X );
-            yMin = Abc_MinFloat( yMin, pNodes[Entry].Y );
-            yMax = Abc_MaxFloat( yMax, pNodes[Entry].Y );
+            iPin = Vec_IntEntry( vPins, k );
+            xMin = Abc_MinFloat( xMin, Phys_PlacePinX(pNodes + Entry, iPin) );
+            xMax = Abc_MaxFloat( xMax, Phys_PlacePinX(pNodes + Entry, iPin) );
+            yMin = Abc_MinFloat( yMin, Phys_PlacePinY(pNodes + Entry, iPin) );
+            yMax = Abc_MaxFloat( yMax, Phys_PlacePinY(pNodes + Entry, iPin) );
         }
         if ( fAnyFixed )
             continue;
@@ -427,12 +482,12 @@ static void Phys_PlaceExtent( Phys_PNode_t * pNodes, Vec_Int_t * vFree, float * 
 
 static void Phys_PlaceReport( const char * pStage, Phys_PNode_t * pNodes, Vec_Int_t * vFree,
                               Vec_Int_t * vNode2Idx, Vec_Int_t * vFreeIdx, Vec_Ptr_t * vSinks,
-                              int nObjs, float Dbu )
+                              Vec_Ptr_t * vSinkPin, int nObjs, float Dbu )
 {
     double IntX, IntY;
     float MinX, MaxX, MinY, MaxY;
     Phys_PlaceExtent( pNodes, vFree, &MinX, &MaxX, &MinY, &MaxY );
-    Phys_PlaceHpwlInternal( pNodes, vNode2Idx, vFreeIdx, vSinks, nObjs, &IntX, &IntY );
+    Phys_PlaceHpwlInternal( pNodes, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nObjs, &IntX, &IntY );
     fprintf( stdout, "Placement: %-11s internal hpwl %8.1f um (x %8.1f, y %8.1f), "
              "extent x [%6.1f, %6.1f] y [%6.1f, %6.1f] um.\n",
              pStage, (IntX + IntY) / Dbu, IntX / Dbu, IntY / Dbu,
@@ -1054,8 +1109,8 @@ static double Phys_PlaceOverflow( Phys_PlaceBins_t * b, double * pDens, double *
   SideEffects []
 
 ***********************************************************************/
-static double Phys_PlaceLse( int * pNetStart, int * pNetPins, int nNets,
-                             double * pAX, double * pAY, Vec_Int_t * vFreeIdx,
+static double Phys_PlaceLse( int * pNetStart, int * pNetPins, float * pNetDx, float * pNetDy,
+                             int nNets, double * pAX, double * pAY, Vec_Int_t * vFreeIdx,
                              double Gamma, double * pGx, double * pGy )
 {
     double Inv = 1.0 / Gamma, Wl = 0.0;
@@ -1067,21 +1122,27 @@ static double Phys_PlaceLse( int * pNetStart, int * pNetPins, int nNets,
         double sx = 0.0, snx = 0.0, sy = 0.0, sny = 0.0;
         if ( End - Start < 2 )
             continue;
+        /* the pins of a net are offset from the cell centers by the LEF
+           pin positions, so the smooth bounding box is taken over the
+           pins.  The gradient is still with respect to the centers,
+           because the offsets are constants of the cell. */
         for ( j = Start; j < End; j++ )
         {
             int nd = pNetPins[j];
-            xmin = xmin < pAX[nd] ? xmin : pAX[nd];
-            xmax = xmax > pAX[nd] ? xmax : pAX[nd];
-            ymin = ymin < pAY[nd] ? ymin : pAY[nd];
-            ymax = ymax > pAY[nd] ? ymax : pAY[nd];
+            double x = pAX[nd] + pNetDx[j], y = pAY[nd] + pNetDy[j];
+            xmin = xmin < x ? xmin : x;
+            xmax = xmax > x ? xmax : x;
+            ymin = ymin < y ? ymin : y;
+            ymax = ymax > y ? ymax : y;
         }
         for ( j = Start; j < End; j++ )
         {
             int nd = pNetPins[j];
-            sx  += exp( (pAX[nd] - xmax) * Inv );
-            snx += exp( (xmin - pAX[nd]) * Inv );
-            sy  += exp( (pAY[nd] - ymax) * Inv );
-            sny += exp( (ymin - pAY[nd]) * Inv );
+            double x = pAX[nd] + pNetDx[j], y = pAY[nd] + pNetDy[j];
+            sx  += exp( (x - xmax) * Inv );
+            snx += exp( (xmin - x) * Inv );
+            sy  += exp( (y - ymax) * Inv );
+            sny += exp( (ymin - y) * Inv );
         }
         Wl += Gamma * (log(sx) + log(snx)) + xmax - xmin
             + Gamma * (log(sy) + log(sny)) + ymax - ymin;
@@ -1089,10 +1150,11 @@ static double Phys_PlaceLse( int * pNetStart, int * pNetPins, int nNets,
         {
             int nd = pNetPins[j];
             int f = Vec_IntEntry( vFreeIdx, nd );
+            double x = pAX[nd] + pNetDx[j], y = pAY[nd] + pNetDy[j];
             if ( f < 0 )
                 continue;
-            pGx[f] += exp( (pAX[nd] - xmax) * Inv ) / sx - exp( (xmin - pAX[nd]) * Inv ) / snx;
-            pGy[f] += exp( (pAY[nd] - ymax) * Inv ) / sy - exp( (ymin - pAY[nd]) * Inv ) / sny;
+            pGx[f] += exp( (x - xmax) * Inv ) / sx - exp( (xmin - x) * Inv ) / snx;
+            pGy[f] += exp( (y - ymax) * Inv ) / sy - exp( (ymin - y) * Inv ) / sny;
         }
     }
     return Wl;
@@ -1101,8 +1163,8 @@ static double Phys_PlaceLse( int * pNetStart, int * pNetPins, int nNets,
 /* gradient of wirelength + lambda * density at the given free positions */
 static double Phys_PlaceEval( Phys_PlaceBins_t * b, Phys_PNode_t * pNodes, int nNodes, int nFree,
                               Vec_Int_t * vFree, Vec_Int_t * vFreeIdx,
-                              int * pNetStart, int * pNetPins, int nNets,
-                              double * pAX, double * pAY, double * pX, double * pY,
+                              int * pNetStart, int * pNetPins, float * pNetDx, float * pNetDy,
+                              int nNets, double * pAX, double * pAY, double * pX, double * pY,
                               double Gamma, double Lambda,
                               double * pGx, double * pGy,
                               double * pOverflow, double * pMaxDens )
@@ -1123,7 +1185,8 @@ static double Phys_PlaceEval( Phys_PlaceBins_t * b, Phys_PNode_t * pNodes, int n
     }
     memset( pGx, 0, sizeof(double)*nFree );
     memset( pGy, 0, sizeof(double)*nFree );
-    Wl = Phys_PlaceLse( pNetStart, pNetPins, nNets, pAX, pAY, vFreeIdx, Gamma, pGx, pGy );
+    Wl = Phys_PlaceLse( pNetStart, pNetPins, pNetDx, pNetDy, nNets,
+                        pAX, pAY, vFreeIdx, Gamma, pGx, pGy );
     Phys_PlaceDensityMap( b, pNodes, nFree, vFree, pX, pY, b->pDens );
     *pOverflow = Phys_PlaceOverflow( b, b->pDens, pMaxDens );
     if ( Lambda != 0.0 )
@@ -1186,7 +1249,8 @@ static double Phys_PlaceGamma( double Gamma0, double GammaEnd, int itGlobal, int
 ***********************************************************************/
 static void Phys_PlaceNesterov( Phys_Man_t * p, Phys_PNode_t * pNodes, int nNodes, int nFree,
                                 Vec_Int_t * vFree, Vec_Int_t * vFreeIdx,
-                                int * pNetStart, int * pNetPins, int nNets,
+                                int * pNetStart, int * pNetPins, float * pNetDx, float * pNetDy,
+                                int nNets,
                                 double x0, double y0, double W, double H, double TotalArea,
                                 double Dbu, Phys_PlacePars_t * pPars,
                                 double * pOverflowOut, double * pMaxDensOut )
@@ -1237,12 +1301,12 @@ static void Phys_PlaceNesterov( Phys_Man_t * p, Phys_PNode_t * pNodes, int nNode
         GammaEnd = Gamma0;
     /* start from a small fraction of the weight that balances the two
        gradient norms; the schedule below raises it as needed */
-    Wl = Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, nNets,
+    Wl = Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, pNetDx, pNetDy, nNets,
                          pAX, pAY, pX, pY, Gamma0, 0.0, pGx, pGy, &Overflow, &MaxDens );
     NormWL = 0.0;
     for ( k = 0; k < nFree; k++ )
         NormWL += pGx[k]*pGx[k] + pGy[k]*pGy[k];
-    Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, nNets,
+    Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, pNetDx, pNetDy, nNets,
                     pAX, pAY, pX, pY, Gamma0, 1.0, pDx, pDy, &Overflow, &MaxDens );
     NormD = 0.0;
     for ( k = 0; k < nFree; k++ )
@@ -1255,7 +1319,7 @@ static void Phys_PlaceNesterov( Phys_Man_t * p, Phys_PNode_t * pNodes, int nNode
         Lambda = 1.0;
     /* one small gradient step gives the previous iterate for the first
        Barzilai-Borwein estimate */
-    Wl = Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, nNets,
+    Wl = Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, pNetDx, pNetDy, nNets,
                          pAX, pAY, pX, pY, Gamma0, Lambda, pGx, pGy, &Overflow, &MaxDens );
     MaxGrad = 0.0;
     for ( k = 0; k < nFree; k++ )
@@ -1272,7 +1336,7 @@ static void Phys_PlaceNesterov( Phys_Man_t * p, Phys_PNode_t * pNodes, int nNode
         pUy[k] = pY[k];
     }
     Phys_PlaceClamp( pVx, pVy, pNodes, vFree, nFree, x0, y0, W, H );
-    Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, nNets,
+    Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, pNetDx, pNetDy, nNets,
                     pAX, pAY, pVx, pVy, Gamma0, Lambda, pDx, pDy, &Overflow, &MaxDens );
     Alpha = 0.0;
     {
@@ -1317,7 +1381,7 @@ static void Phys_PlaceNesterov( Phys_Man_t * p, Phys_PNode_t * pNodes, int nNode
         if ( Stage > 0 && fLambdaChanged )
         {
             Gamma = Phys_PlaceGamma( Gamma0, GammaEnd, itGlobal, nTot );
-            Wl = Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, nNets,
+            Wl = Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, pNetDx, pNetDy, nNets,
                                  pAX, pAY, pX, pY, Gamma, Lambda, pGx, pGy, &Overflow, &MaxDens );
             for ( k = 0; k < nFree; k++ )
             {
@@ -1387,7 +1451,7 @@ static void Phys_PlaceNesterov( Phys_Man_t * p, Phys_PNode_t * pNodes, int nNode
             A     = ANext;
             Alpha = BB;
             Gamma = Phys_PlaceGamma( Gamma0, GammaEnd, itGlobal, nTot );
-            Wl = Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, nNets,
+            Wl = Phys_PlaceEval( b, pNodes, nNodes, nFree, vFree, vFreeIdx, pNetStart, pNetPins, pNetDx, pNetDy, nNets,
                                  pAX, pAY, pX, pY, Gamma, Lambda, pGx, pGy, &Overflow, &MaxDens );
             /* remember the iterate that best balances wirelength and density:
                once the density weight has grown past what the bin model can
@@ -1506,7 +1570,7 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     int nObjs = Gia_ManObjNum( pGia );
     Phys_PNode_t * pNodes;
     Vec_Int_t * vNode2Idx, * vFreeIdx, * vFree;
-    Vec_Ptr_t * vSinks;
+    Vec_Ptr_t * vSinks, * vSinkPin;
     Vec_Int_t * vEI, * vEJ;
     Vec_Flt_t * vEW, * vDiag, * vBx, * vBy, * vSolX, * vSolY, * vRefX, * vRefY;
     double TotalArea = 0.0;
@@ -1556,6 +1620,7 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     vFreeIdx  = Vec_IntAlloc( 1024 );
     vFree     = Vec_IntAlloc( 1024 );
     vSinks    = Vec_PtrStart( nLits );
+    vSinkPin  = Vec_PtrStart( nLits );
     /* one movable node per cell instance, plus a fixed node per PI and PO;
        an inverter or a second phase cell at the same Gia object is its own
        node, so the placer sees the netlist the mapper produced */
@@ -1577,10 +1642,22 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         pNode->Kind = Kind;
         if ( Kind == 0 )
         {
+            int pdx, pdy, kk, nFans = Phys_ManLitFaninNum( p, pGia, i );
+            int nPins = nFans < PHYS_PLACE_MAX_PINS ? nFans : PHYS_PLACE_MAX_PINS;
             Phys_PlaceCellSize( p, pCell, &pNode->W, &pNode->H );
             pNode->Fixed = 0;
             TotalArea += (double)pNode->W * (double)pNode->H;
             Vec_IntPush( vFree, nNodes );
+            /* the pin positions inside the cell, from its LEF macro */
+            for ( kk = 0; kk < nPins; kk++ )
+            {
+                Phys_ManLitPinOffset( p, i, kk, &pdx, &pdy );
+                pNode->Dx[kk] = (float)pdx;
+                pNode->Dy[kk] = (float)pdy;
+            }
+            Phys_ManLitPinOffset( p, i, -1, &pdx, &pdy );
+            pNode->Dxo = (float)pdx;
+            pNode->Dyo = (float)pdy;
         }
         else
         {
@@ -1600,6 +1677,7 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         Vec_IntFree( vFreeIdx );
         Vec_IntFree( vFree );
         Vec_PtrFree( vSinks );
+        Vec_PtrFree( vSinkPin );
         return 0;
     }
     Vec_IntGrow( vFreeIdx, nNodes );
@@ -1650,10 +1728,11 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
                 pNode->X = x0 + W, pNode->Y = y0 + H * (0.5f + nPo++) / (nPoTot + 1);
         }
     }
-    /* collect nets: vSinks[d] lists the sink nodes driven by literal d */
+    /* collect nets: vSinks[d] lists the sink nodes driven by literal d,
+       and vSinkPin[d] the input pin every sink uses in that net */
     for ( i = 0; i < nNodes; i++ )
     {
-        Vec_Int_t * vList;
+        Vec_Int_t * vList, * vPins;
         int d = -1;
         if ( pNodes[i].Kind == 2 )
             d = Phys_ManDriverLit( p, pGia,
@@ -1668,8 +1747,14 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
                     continue;
                 vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, d );
                 if ( vList == NULL )
+                {
                     Vec_PtrWriteEntry( vSinks, d, vList = Vec_IntAlloc(4) );
+                    Vec_PtrWriteEntry( vSinkPin, d, vPins = Vec_IntAlloc(4) );
+                }
+                else
+                    vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, d );
                 Vec_IntPush( vList, i );
+                Vec_IntPush( vPins, k < PHYS_PLACE_MAX_PINS ? k : PHYS_PLACE_PIN_NONE );
             }
             continue;
         }
@@ -1677,8 +1762,14 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
             continue;
         vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, d );
         if ( vList == NULL )
+        {
             Vec_PtrWriteEntry( vSinks, d, vList = Vec_IntAlloc(4) );
+            Vec_PtrWriteEntry( vSinkPin, d, vPins = Vec_IntAlloc(4) );
+        }
+        else
+            vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, d );
         Vec_IntPush( vList, i );
+        Vec_IntPush( vPins, PHYS_PLACE_PIN_NONE ); /* a primary output has no pin */
     }
     /* build the quadratic system over free nodes */
     vEI = Vec_IntAlloc( 1024 );
@@ -1689,9 +1780,12 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     vBy   = Vec_FltStart( nFree );
     {
         Vec_Int_t * vPinIdx = Vec_IntAlloc( 16 );
+        Vec_Flt_t * vPinDx  = Vec_FltAlloc( 16 );
+        Vec_Flt_t * vPinDy  = Vec_FltAlloc( 16 );
         for ( q = 0; q < nLits; q++ )
         {
             Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
+            Vec_Int_t * vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, q );
             int iDriver, nPins, a, b;
             float w;
             if ( vList == NULL )
@@ -1699,9 +1793,21 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
             iDriver = Vec_IntEntry( vNode2Idx, q );
             if ( iDriver < 0 )
                 continue;
+            /* the driver uses its output pin, every sink its input pin;
+               the offsets enter the right-hand side, not the matrix */
             Vec_IntClear( vPinIdx );
+            Vec_FltClear( vPinDx );
+            Vec_FltClear( vPinDy );
             Vec_IntPush( vPinIdx, iDriver );
-            Vec_IntAppend( vPinIdx, vList );
+            Vec_FltPush( vPinDx, pNodes[iDriver].Dxo );
+            Vec_FltPush( vPinDy, pNodes[iDriver].Dyo );
+            Vec_IntForEachEntry( vList, i, k )
+            {
+                int iPin = Vec_IntEntry( vPins, k );
+                Vec_IntPush( vPinIdx, i );
+                Vec_FltPush( vPinDx, Phys_PlacePinDx(pNodes + i, iPin) );
+                Vec_FltPush( vPinDy, Phys_PlacePinDy(pNodes + i, iPin) );
+            }
             nPins = Vec_IntSize( vPinIdx );
             if ( nPins < 2 )
                 continue;
@@ -1713,6 +1819,8 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
                 int ib = Vec_IntEntry( vPinIdx, b );
                 int fa = ia >= 0 ? Vec_IntEntry( vFreeIdx, ia ) : -1;
                 int fb = ib >= 0 ? Vec_IntEntry( vFreeIdx, ib ) : -1;
+                float dx = Vec_FltEntry(vPinDx, a) - Vec_FltEntry(vPinDx, b);
+                float dy = Vec_FltEntry(vPinDy, a) - Vec_FltEntry(vPinDy, b);
                 if ( fa >= 0 && fb >= 0 )
                 {
                     Vec_IntPush( vEI, fa );
@@ -1720,6 +1828,12 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
                     Vec_FltPush( vEW, w );
                     Vec_FltAddToEntry( vDiag, fa, w );
                     Vec_FltAddToEntry( vDiag, fb, w );
+                    /* the pins of the two cells are offset in opposite
+                       directions, which shifts the solution of the pair */
+                    Vec_FltAddToEntry( vBx,   fa, -w * dx );
+                    Vec_FltAddToEntry( vBx,   fb,  w * dx );
+                    Vec_FltAddToEntry( vBy,   fa, -w * dy );
+                    Vec_FltAddToEntry( vBy,   fb,  w * dy );
                     nEdges++;
                 }
                 else if ( fa >= 0 )
@@ -1737,6 +1851,8 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
             }
         }
         Vec_IntFree( vPinIdx );
+        Vec_FltFree( vPinDx );
+        Vec_FltFree( vPinDy );
     }
     vSolX = Vec_FltStart( nFree );
     vSolY = Vec_FltStart( nFree );
@@ -1760,7 +1876,7 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         fprintf( stdout, "Placement: %d nodes (%d free), %d quadratic edges, core %.1f x %.1f um.\n",
                  nNodes, nFree, nEdges, W / Dbu, H / Dbu );
     if ( pPars->fVerbose )
-        Phys_PlaceReport( "random init:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nLits, Dbu );
+        Phys_PlaceReport( "random init:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
     Phys_PlaceSolve( nFree, vDiag, vEI, vEJ, vEW, vBx, vRefX, Anchor, vSolX, pPars->nIterCG );
     Phys_PlaceSolve( nFree, vDiag, vEI, vEJ, vEW, vBy, vRefY, Anchor, vSolY, pPars->nIterCG );
     Vec_IntForEachEntry( vFree, i, k )
@@ -1769,10 +1885,10 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         pNodes[i].Y = Vec_FltEntry( vSolY, k );
     }
     if ( pPars->fVerbose )
-        Phys_PlaceReport( "after CG:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nLits, Dbu );
+        Phys_PlaceReport( "after CG:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
     Phys_PlaceScale( pNodes, vFree, vSolX, vSolY, x0, y0, W, H, TotalArea, pPars->Util );
     if ( pPars->fVerbose )
-        Phys_PlaceReport( "after scale:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nLits, Dbu );
+        Phys_PlaceReport( "after scale:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
     /* Build the CSR net list of the nonlinear placement.  The driver of
        every net comes first, followed by its sinks; the pins index into
        the node array, so the fixed terminals are addressed the same way
@@ -1780,23 +1896,38 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     {
         Vec_Int_t * vNetStart = Vec_IntAlloc( nLits + 1 );
         Vec_Int_t * vNetPins  = Vec_IntAlloc( 4 * nLits + 16 );
+        Vec_Flt_t * vNetDx    = Vec_FltAlloc( 4 * nLits + 16 );
+        Vec_Flt_t * vNetDy    = Vec_FltAlloc( 4 * nLits + 16 );
         double Overflow = 0.0, MaxDens = 0.0;
         Vec_IntPush( vNetStart, 0 );
         for ( q = 0; q < nLits; q++ )
         {
             Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
+            Vec_Int_t * vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, q );
             int iDriver;
             if ( vList == NULL )
                 continue;
             iDriver = Vec_IntEntry( vNode2Idx, q );
             if ( iDriver < 0 )
                 continue;
+            /* every pin of the net carries the LEF offset of its cell,
+               so the smooth bounding box follows the pins and not the
+               cell centers */
             Vec_IntPush( vNetPins, iDriver );
-            Vec_IntAppend( vNetPins, vList );
+            Vec_FltPush( vNetDx, pNodes[iDriver].Dxo );
+            Vec_FltPush( vNetDy, pNodes[iDriver].Dyo );
+            Vec_IntForEachEntry( vList, i, k )
+            {
+                int iPin = Vec_IntEntry( vPins, k );
+                Vec_IntPush( vNetPins, i );
+                Vec_FltPush( vNetDx, Phys_PlacePinDx(pNodes + i, iPin) );
+                Vec_FltPush( vNetDy, Phys_PlacePinDy(pNodes + i, iPin) );
+            }
             Vec_IntPush( vNetStart, Vec_IntSize(vNetPins) );
         }
         Phys_PlaceNesterov( p, pNodes, nNodes, nFree, vFree, vFreeIdx,
-                            Vec_IntArray(vNetStart), Vec_IntArray(vNetPins), Vec_IntSize(vNetStart)-1,
+                            Vec_IntArray(vNetStart), Vec_IntArray(vNetPins),
+                            Vec_FltArray(vNetDx), Vec_FltArray(vNetDy), Vec_IntSize(vNetStart)-1,
                             x0, y0, W, H, TotalArea, Dbu, pPars, &Overflow, &MaxDens );
         if ( pPars->fVerbose )
             fprintf( stdout, "Placement: nonlinear placement over %d nets finished at "
@@ -1804,13 +1935,15 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
                      Vec_IntSize(vNetStart)-1, Overflow, MaxDens );
         Vec_IntFree( vNetStart );
         Vec_IntFree( vNetPins );
+        Vec_FltFree( vNetDx );
+        Vec_FltFree( vNetDy );
     }
     if ( pPars->fVerbose )
-        Phys_PlaceReport( "after nonlinear:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nLits, Dbu );
+        Phys_PlaceReport( "after nonlinear:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
     /* Legalize the spread solution. */
     nOverlaps = Phys_PlaceLegalize( p, pNodes, vFree, x0, y0, W, H, pPars->fVerbose );
     if ( pPars->fVerbose )
-        Phys_PlaceReport( "after legal:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, nLits, Dbu );
+        Phys_PlaceReport( "after legal:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
     /* save the result */
     Phys_ManClearPlace( p );
     p->vObjX = Vec_IntStartFull( nObjs );
@@ -1839,7 +1972,7 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     p->fPlaced = 1;
     Phys_ManClearTiming( p );
     /* total half-perimeter wirelength of the placed netlist */
-    p->Hpwl = (float)( Phys_PlaceHpwl( pNodes, vNode2Idx, vSinks, nLits ) / Dbu );
+    p->Hpwl = (float)( Phys_PlaceHpwl( pNodes, vNode2Idx, vSinks, vSinkPin, nLits ) / Dbu );
     /* routing congestion of the legal placement; &phys_dump and &phys_map
        both read this map */
     {
@@ -1868,9 +2001,14 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     Vec_IntFree( vFreeIdx );
     Vec_IntFree( vFree );
     for ( q = 0; q < nLits; q++ )
+    {
         if ( Vec_PtrEntry(vSinks, q) != NULL )
             Vec_IntFree( (Vec_Int_t *)Vec_PtrEntry(vSinks, q) );
+        if ( Vec_PtrEntry(vSinkPin, q) != NULL )
+            Vec_IntFree( (Vec_Int_t *)Vec_PtrEntry(vSinkPin, q) );
+    }
     Vec_PtrFree( vSinks );
+    Vec_PtrFree( vSinkPin );
     Vec_IntFree( vEI ); Vec_IntFree( vEJ );
     Vec_FltFree( vEW ); Vec_FltFree( vDiag );
     Vec_FltFree( vBx ); Vec_FltFree( vBy );

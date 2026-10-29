@@ -400,15 +400,24 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
         pY   = ABC_ALLOC( float, nPins );
         pCap = ABC_CALLOC( float, nPins );
         pDel = ABC_ALLOC( float, nPins );
-        pX[0] = Phys_StaLitX( p, i ) / Dbu;
-        pY[0] = Phys_StaLitY( p, i ) / Dbu;
+        {
+            /* the wire runs from the output pin of the driver to the
+               input pin of every sink, not from the cell centers */
+            int dx, dy;
+            Phys_ManLitPinOffset( p, i, -1, &dx, &dy );
+            pX[0] = (Phys_StaLitX( p, i ) + (float)dx) / Dbu;
+            pY[0] = (Phys_StaLitY( p, i ) + (float)dy) / Dbu;
+        }
         for ( q = 0; q < Vec_IntSize(vObj); q++ )
         {
             int iSink = Vec_IntEntry( vObj, q );
             int iPin  = Vec_IntEntry( vPin, q );
             Vec_Ptr_t * vPins = Phys_ManLitPins( p, iSink );
-            pX[q+1]   = Phys_StaLitX( p, iSink ) / Dbu;
-            pY[q+1]   = Phys_StaLitY( p, iSink ) / Dbu;
+            int dx = 0, dy = 0;
+            if ( iPin >= 0 )
+                Phys_ManLitPinOffset( p, iSink, iPin, &dx, &dy );
+            pX[q+1]   = (Phys_StaLitX( p, iSink ) + (float)dx) / Dbu;
+            pY[q+1]   = (Phys_StaLitY( p, iSink ) + (float)dy) / Dbu;
             pCap[q+1] = Phys_StaPinCap( vPins, iPin );
         }
         Phys_StaElmoreNet( pX, pY, pCap, nPins, RcR, RcC, pDel, &TotalCap, &TotalLen );

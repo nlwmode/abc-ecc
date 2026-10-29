@@ -234,6 +234,73 @@ Vec_Ptr_t * Phys_ManLitPins( Phys_Man_t * p, int iLit )
            (Vec_Ptr_t *)Vec_PtrEntry( p->vLitToPins, iLit ) : NULL;
 }
 
+/* Macro of a cell instance, or NULL when the LEF has no such macro. */
+Phys_LefMacro_t * Phys_ManLitMacro( Phys_Man_t * p, int iLit )
+{
+    Phys_LibCell_t * pCell = Phys_ManLitCell( p, iLit );
+    if ( p->pLef == NULL || pCell == NULL ||
+         pCell->MacroId < 0 || pCell->MacroId >= Vec_PtrSize(p->pLef->vMacros) )
+        return NULL;
+    return (Phys_LefMacro_t *)Vec_PtrEntry( p->pLef->vMacros, pCell->MacroId );
+}
+
+/* LEF geometry of pin k of a cell instance: the k-th input pin in fanin
+   order when k >= 0, the output pin when k < 0. */
+Phys_LefPin_t * Phys_ManLitLefPin( Phys_Man_t * p, int iLit, int k )
+{
+    Phys_LefMacro_t * pMacro = Phys_ManLitMacro( p, iLit );
+    Phys_LibPin_t * pLibPin;
+    Vec_Ptr_t * vPins;
+    if ( pMacro == NULL )
+        return NULL;
+    if ( k < 0 )
+    {
+        int i;
+        Vec_PtrForEachEntry( Phys_LibPin_t *, Phys_ManLitCell(p, iLit)->vPins, pLibPin, i )
+            if ( pLibPin->Dir == 1 )
+                return Phys_LefMacroFindPin( pMacro, pLibPin->pName );
+        return NULL;
+    }
+    vPins = Phys_ManLitPins( p, iLit );
+    if ( vPins == NULL || k >= Vec_PtrSize(vPins) )
+        return NULL;
+    pLibPin = (Phys_LibPin_t *)Vec_PtrEntry( vPins, k );
+    return pLibPin != NULL ? Phys_LefMacroFindPin( pMacro, pLibPin->pName ) : NULL;
+}
+
+/* Offset of a pin from the cell center, in DBU: input pin k in fanin
+   order when k >= 0, the output pin when k < 0.  Returns 0 and leaves
+   the offset at zero when the cell or the pin has no LEF geometry, so
+   the cell center is the fallback anchor of the wire.  A supergate has
+   no LEF macro but carries the geometry composed from its members. */
+int Phys_ManLitPinOffset( Phys_Man_t * p, int iLit, int k, int * pDx, int * pDy )
+{
+    Phys_LibCell_t * pCell = Phys_ManLitCell( p, iLit );
+    Phys_LefMacro_t * pMacro = Phys_ManLitMacro( p, iLit );
+    Phys_LefPin_t * pPin = Phys_ManLitLefPin( p, iLit, k );
+    if ( pDx != NULL ) *pDx = 0;
+    if ( pDy != NULL) *pDy = 0;
+    if ( pMacro == NULL || pPin == NULL )
+    {
+        if ( pCell == NULL || pCell->pPinDx == NULL )
+            return 0;
+        if ( k < 0 )
+        {
+            if ( pDx != NULL ) *pDx = pCell->DxOut;
+            if ( pDy != NULL ) *pDy = pCell->DyOut;
+            return 1;
+        }
+        if ( k >= pCell->nInputs )
+            return 0;
+        if ( pDx != NULL ) *pDx = pCell->pPinDx[k];
+        if ( pDy != NULL ) *pDy = pCell->pPinDy[k];
+        return 1;
+    }
+    if ( pDx != NULL ) *pDx = pPin->x - pMacro->OriginX - pMacro->Width / 2;
+    if ( pDy != NULL ) *pDy = pPin->y - pMacro->OriginY - pMacro->Height / 2;
+    return 1;
+}
+
 int Phys_ManLitFaninNum( Phys_Man_t * p, Gia_Man_t * pGia, int iLit )
 {
     if ( !Phys_ManLitIsCell( p, iLit ) )

@@ -16,6 +16,7 @@
 #include "phys/lib/physTypes.h"
 #include "phys/lib/physLef.h"
 #include "phys/lib/physLiberty.h"
+#include "phys/lib/physSuper.h"
 
 #endif
 
