@@ -969,9 +969,12 @@ void Phys_LefMacroPrint( Phys_LefTech_t * p, Phys_LefMacro_t * pMacro )
     (void)p;
 }
 
-ABC_NAMESPACE_IMPL_END
-
 /* The generated scanner/parser are compiled as part of this translation
-   unit so that they can use the static helpers above. */
+   unit so that they can use the static helpers above.  Keep them inside
+   the ABC namespace: when ABC is built as C++ with ABC_NAMESPACE set,
+   the helpers and the generated entry points declared above are all
+   abc:: names, and the parser must see them unqualified. */
 #include "physLefYacc.c"
 #include "physLefLex.c"
+
+ABC_NAMESPACE_IMPL_END
