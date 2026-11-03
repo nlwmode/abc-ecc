@@ -1212,7 +1212,9 @@ usage:
                solver provides the starting point; the RePlAce/DREAMPlace
                nonlinear placement then minimizes the log-sum-exp
                wirelength plus an electrostatic density penalty, and the
-               result is legalized into the rows.  The wirelength is taken
+               result is kept as the spread solution; with "-l" it is
+               legalized into the rows, so the cells sit on sites.  The
+               wirelength is taken
                between the LEF pin shapes of the cells: a net starts at
                the output pin of its driver and ends at the input pin of
                every sink, so the cell shapes and the pin positions of the
@@ -1229,7 +1231,7 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
     Phys_PlaceSetDefault( &Def );
     Pars = Def;
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "u:a:i:s:o:g:p:e:vh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "u:a:i:s:o:g:p:e:lvh" )) != EOF )
     {
         switch ( c )
         {
@@ -1280,6 +1282,9 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
                 goto usage;
             }
             break;
+        case 'l':
+            Pars.fLegalize = 1;
+            break;
         case 'v':
             fVerbose ^= 1;
             break;
@@ -1307,7 +1312,7 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: &phys_place [-u num] [-a num] [-i num] [-s num] [-o num] [-g num] [-p num] [-e num] [-vh]\n" );
+    Abc_Print( -2, "usage: &phys_place [-u num] [-a num] [-i num] [-s num] [-o num] [-g num] [-p num] [-e num] [-lvh]\n" );
     Abc_Print( -2, "\t          places the bound Gia netlist (virtual AIG cells before\n" );
     Abc_Print( -2, "\t          mapping, mapped standard cells afterwards)\n" );
     Abc_Print( -2, "\t-u num  : target core utilization, 0 < num <= 1 [default = %.2f]\n", Def.Util );
@@ -1323,6 +1328,9 @@ usage:
     Abc_Print( -2, "\t          the object order (the control for 1 and 2)\n" );
     Abc_Print( -2, "\t-e num  : minimum IO pin pitch in um; a core too small to host the\n" );
     Abc_Print( -2, "\t          terminals at this pitch is enlarged [default = %.2f, no limit]\n", Def.IoPitch );
+    Abc_Print( -2, "\t-l      : legalize the placement into standard-cell rows; by\n" );
+    Abc_Print( -2, "\t          default the spread placement is kept, so the cells may\n" );
+    Abc_Print( -2, "\t          overlap and are not aligned to sites [default = no]\n" );
     Abc_Print( -2, "\t-v      : print detailed information [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );
     return 1;

@@ -14,7 +14,9 @@
                     grid.  The iterations use Nesterov acceleration with
                     a Barzilai-Borwein step size, and the density weight
                     grows whenever the density overflow stops improving
-                 4) legalize the cells into standard-cell rows
+                 4) optionally legalize the cells into standard-cell
+                    rows (-l); by default the spread solution is kept,
+                    so the cells may overlap and do not sit on sites
                The terminals are boundary conditions of the placement,
                and object order says nothing about connectivity, so by
                default the placement is solved first, every terminal is
@@ -51,6 +53,8 @@ typedef struct Phys_PlacePars_t_
     int   nPinMode;     /* 0 = object order, 1 = sorted on two sides,
                            2 = sorted and assigned to all four sides */
     float IoPitch;      /* minimum IO pin pitch in um, 0 = no limit */
+    int   fLegalize;    /* 1 = legalize into rows, 0 = keep the spread
+                           placement, whose cells may overlap        */
     int   fVerbose;
 } Phys_PlacePars_t;
 

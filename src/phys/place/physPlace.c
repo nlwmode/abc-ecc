@@ -93,13 +93,9 @@ void Phys_PlaceSetDefault( Phys_PlacePars_t * p )
        order of the left and right edges, at half the placement runtime */
     p->nPinMode     = 2;
     p->IoPitch      = 0.0f;
+    /* the solver output is kept by default; -l legalizes it into rows */
+    p->fLegalize    = 0;
     p->fVerbose     = 0;
-}
-
-static float Phys_PlaceRand( unsigned * pSeed )
-{
-    *pSeed = (*pSeed) * 1103515245u + 12345u;
-    return (float)((*pSeed >> 8) & 0xFFFF) / 65535.0f;
 }
 
 static Phys_LefMacro_t * Phys_PlaceMacro( Phys_Man_t * p, Phys_LibCell_t * pCell )
@@ -1841,8 +1837,7 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     Vec_Flt_t * vEW, * vDiag, * vBx, * vBy, * vSolX, * vSolY, * vRefX, * vRefY;
     double TotalArea = 0.0;
     float x0, y0, W, H, Dbu, Anchor, AvgDiag;
-    int i, k, q, nLits, nNodes = 0, nFree = 0, nEdges = 0, nOverlaps, iPass, nPasses;
-    unsigned Seed = 12345;
+    int i, k, q, nLits, nNodes = 0, nFree = 0, nEdges = 0, nOverlaps = 0, iPass, nPasses;
     if ( p == NULL || pGia == NULL || pPars == NULL )
         return 0;
     if ( pPars->Util <= 0.0f || pPars->Util > 1.0f )
@@ -1981,19 +1976,16 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         x0 = 0.0f;
         y0 = 0.0f;
     }
-    /* the placement is deterministic for a given netlist: the random seed
-       is fixed, so two feedback rounds on the same mapping produce the same
-       coordinates and the loop reaches a fixed point instead of drifting */
-    /* initial positions */
+    /* the initial positions are the center of the core, which makes the
+       starting state deterministic and independent of the object order;
+       the quadratic solve then spreads the cells by connectivity */
     for ( i = 0; i < nNodes; i++ )
     {
         Phys_PNode_t * pNode = pNodes + i;
         if ( pNode->Fixed )
             continue;
-        {
-            pNode->X = x0 + 0.5f*pNode->W + Phys_PlaceRand(&Seed) * (W - pNode->W);
-            pNode->Y = y0 + 0.5f*pNode->H + Phys_PlaceRand(&Seed) * (H - pNode->H);
-        }
+        pNode->X = x0 + 0.5f * W;
+        pNode->Y = y0 + 0.5f * H;
     }
     /* PIs on the left, POs on the right */
     {
@@ -2265,10 +2257,19 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
             Phys_PlaceReport( "after nonlinear:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
         if ( iPass + 1 == nPasses )
         {
-            /* Legalize the spread solution. */
-            nOverlaps = Phys_PlaceLegalize( p, pNodes, vFree, x0, y0, W, H, pPars->fVerbose );
-            if ( pPars->fVerbose )
-                Phys_PlaceReport( "after legal:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
+            /* Legalize the spread solution.  Without legalization the
+               solver's output is kept as is: the cells may overlap and
+               are not aligned to the standard-cell rows, which is useful
+               when the placement is only a cost/geometry model or when a
+               later stage does its own legalization. */
+            if ( pPars->fLegalize )
+            {
+                nOverlaps = Phys_PlaceLegalize( p, pNodes, vFree, x0, y0, W, H, pPars->fVerbose );
+                if ( pPars->fVerbose )
+                    Phys_PlaceReport( "after legal:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
+            }
+            else if ( pPars->fVerbose )
+                fprintf( stdout, "Placement: legalization skipped; the spread solution is kept.\n" );
         }
         else if ( pPars->nPinMode <= 2 )
         {
@@ -2327,13 +2328,20 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         }
     }
     if ( pPars->fVerbose )
-        fprintf( stdout, "Placement: %d cells placed, %d overlaps remain, utilization %.2f, "
+    {
+        char Overlaps[64];
+        if ( pPars->fLegalize )
+            sprintf( Overlaps, "%d overlaps remain", nOverlaps );
+        else
+            sprintf( Overlaps, "legalization skipped" );
+        fprintf( stdout, "Placement: %d cells placed, %s, utilization %.2f, "
                  "%d/%d rows used, max row occupancy %.2f, wirelength %.1f um, cell area %.1f um^2.\n",
-                 nFree, nOverlaps, TotalArea / ((double)W * (double)H),
+                 nFree, Overlaps, TotalArea / ((double)W * (double)H),
                  Phys_PlaceRowsUsed( pNodes, vFree, y0, H, p->SiteH ),
                  (int)(H / p->SiteH),
                  Phys_PlaceMaxRowOcc( pNodes, vFree, y0, H, p->SiteH, W ), p->Hpwl,
                  TotalArea / ((double)Dbu * (double)Dbu) );
+    }
     ABC_FREE( pNodes );
     Vec_IntFree( vNode2Idx );
     Vec_IntFree( vFreeIdx );
