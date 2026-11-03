@@ -74,3 +74,5 @@ phys_ws/
 phys_steiner_ws/
 # unit-RC-from-layer check workspace (test/phys_signal_rc.sh)
 phys_rc_ws/
+# archive of the measurement artifacts copied from /tmp (see phys_exp/README.md)
+phys_exp/
