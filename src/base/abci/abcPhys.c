@@ -13,6 +13,7 @@
                  read_liberty   - read a Liberty library with the new parser
                  set_signal_res - unit wire resistance for RC extraction
                  set_signal_cap - unit wire capacitance for RC extraction
+                                  (both take a value, or a metal layer with -l)
                  print_phys     - report the data currently loaded
                These readers are intentionally outside the
                &phys_start/&phys_end session (as required).]
@@ -224,12 +225,77 @@ usage:
 
 /**Function*************************************************************
 
+  Synopsis    [Derives the unit RC of a routing layer from the LEF data]
+
+  Description [Looks up the layer read by "read_lef -t" and converts its
+               per-square resistance and capacitance into the per-micron
+               values used by the timing analysis.  The conversion is the
+               same one that "&phys_sta -l <layer>" performs, so setting
+               the value with "set_signal_res -l"/"set_signal_cap -l"
+               gives exactly the result of timing with that layer.  The
+               name "auto" selects the first routing layer with RC data,
+               which is what the timing analysis uses by default.
+               Returns 1 on success and 0 when the layer or its data is
+               missing.]
+
+  SideEffects []
+
+***********************************************************************/
+static int Abc_PhysSignalLayerRc( Abc_Frame_t * pAbc, const char * pName, int fRes, float * pValue, const char ** ppLayer )
+{
+    Phys_LefTech_t * pLef = (Phys_LefTech_t *)pAbc->pLef;
+    Phys_LefLayer_t * pLayer, * pIter;
+    float RcR = 0.0f, RcC = 0.0f;
+    int i;
+    if ( pLef == NULL )
+    {
+        Abc_Print( -1, "The technology LEF is not loaded. Run \"read_lef -t\" first.\n" );
+        return 0;
+    }
+    pLayer = Phys_LefFindRcLayer( pLef, !strcmp( pName, "auto" ) ? NULL : pName );
+    if ( pLayer == NULL )
+    {
+        Abc_Print( -1, "Cannot find the routing layer \"%s\" in the LEF data.\n", pName );
+        Abc_Print( -2, "The routing layers are:" );
+        Vec_PtrForEachEntry( Phys_LefLayer_t *, pLef->vLayers, pIter, i )
+            if ( pIter->fRouting )
+                Abc_Print( -2, " %s", pIter->pName );
+        Abc_Print( -2, ".\n" );
+        return 0;
+    }
+    if ( !pLayer->fRouting )
+        Abc_Print( 0, "layer \"%s\" is not a routing layer.\n", pLayer->pName );
+    Phys_LefLayerRc( pLef, pLayer, &RcR, &RcC );
+    if ( fRes && (RcR <= 0.0f || pLayer->ResPerSq <= 0.0f) )
+    {
+        Abc_Print( -1, "Layer \"%s\" defines no resistance; the LEF needs "
+                       "\"RESISTANCE RPERSQ\" and \"WIDTH\".\n", pLayer->pName );
+        return 0;
+    }
+    if ( !fRes && RcC <= 0.0f )
+    {
+        Abc_Print( -1, "Layer \"%s\" defines no capacitance; the LEF needs "
+                       "\"CAPACITANCE CPERSQDIST\" or \"EDGECAPACITANCE\".\n", pLayer->pName );
+        return 0;
+    }
+    *pValue = fRes ? RcR : RcC;
+    if ( ppLayer != NULL )
+        *ppLayer = pLayer->pName;
+    return 1;
+}
+
+
+/**Function*************************************************************
+
   Synopsis    [set_signal_res command]
 
   Description [Sets the unit resistance of a signal wire.  The timing
                analysis multiplies it by the length of every edge of the
-               RC tree that it extracts from the placed netlist.  Zero,
-               the default, makes the analysis use the resistance of the
+               RC tree that it extracts from the placed netlist.  The
+               value is either given directly in ohm/um or derived from
+               the selected routing layer with "-l <layer>", which uses
+               the same conversion as "&phys_sta -l <layer>".  Zero, the
+               default, makes the analysis use the resistance of the
                routing layer read from the LEF.]
 
   SideEffects []
@@ -238,12 +304,19 @@ usage:
 int Abc_CommandSetSignalRes( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
     float Res;
+    char * pLayer = NULL;
+    const char * pLefLayer = NULL;
     int c, fVerbose = 0;
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "vh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "l:vh" )) != EOF )
     {
         switch ( c )
         {
+        case 'l':
+            if ( globalUtilOptarg == NULL )
+                goto usage;
+            pLayer = (char *)globalUtilOptarg;
+            break;
         case 'v':
             fVerbose ^= 1;
             break;
@@ -252,6 +325,19 @@ int Abc_CommandSetSignalRes( Abc_Frame_t * pAbc, int argc, char ** argv )
         default:
             goto usage;
         }
+    }
+    if ( pLayer != NULL )
+    {
+        if ( argc != globalUtilOptind )
+        {
+            Abc_Print( -1, "The value cannot be given together with \"-l\".\n" );
+            goto usage;
+        }
+        if ( !Abc_PhysSignalLayerRc( pAbc, pLayer, 1, &Res, &pLefLayer ) )
+            return 1;
+        Abc_FrameSetSignalRes( Res );
+        Abc_Print( 1, "Signal resistance: %.9g ohm/um (layer %s).\n", Res, pLefLayer );
+        return 0;
     }
     if ( argc == globalUtilOptind )
     {
@@ -273,10 +359,12 @@ int Abc_CommandSetSignalRes( Abc_Frame_t * pAbc, int argc, char ** argv )
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: set_signal_res [-vh] [value]\n" );
+    Abc_Print( -2, "usage: set_signal_res [-l layer] [-vh] [value]\n" );
     Abc_Print( -2, "\t          sets the unit resistance of a signal wire used to extract\n" );
     Abc_Print( -2, "\t          the RC of the placed nets\n" );
     Abc_Print( -2, "\tvalue   : resistance in ohm/um [default = LEF routing layer]\n" );
+    Abc_Print( -2, "\t-l layer: take the resistance of a routing layer read by\n" );
+    Abc_Print( -2, "\t          \"read_lef -t\", or \"auto\" for the layer used by default\n" );
     Abc_Print( -2, "\t-v      : print the new value [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );
     return 1;
@@ -289,10 +377,14 @@ usage:
 
   Description [Sets the unit capacitance of a signal wire.  The timing
                analysis multiplies it by the length of every edge of the
-               RC tree that it extracts from the placed netlist.  Zero,
-               the default, makes the analysis use the capacitance of the
-               routing layer read from the LEF, or a typical value when
-               the LEF does not define one.]
+               RC tree that it extracts from the placed netlist.  The
+               value is either given directly in pF/um or derived from
+               the selected routing layer with "-l <layer>", which uses
+               the same conversion as "&phys_sta -l <layer>" (per-square
+               capacitance times the width plus the two edge
+               capacitances).  Zero, the default, makes the analysis use
+               the capacitance of the routing layer read from the LEF, or
+               a typical value when the LEF does not define one.]
 
   SideEffects []
 
@@ -300,12 +392,19 @@ usage:
 int Abc_CommandSetSignalCap( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
     float Cap;
+    char * pLayer = NULL;
+    const char * pLefLayer = NULL;
     int c, fVerbose = 0;
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "vh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "l:vh" )) != EOF )
     {
         switch ( c )
         {
+        case 'l':
+            if ( globalUtilOptarg == NULL )
+                goto usage;
+            pLayer = (char *)globalUtilOptarg;
+            break;
         case 'v':
             fVerbose ^= 1;
             break;
@@ -314,6 +413,19 @@ int Abc_CommandSetSignalCap( Abc_Frame_t * pAbc, int argc, char ** argv )
         default:
             goto usage;
         }
+    }
+    if ( pLayer != NULL )
+    {
+        if ( argc != globalUtilOptind )
+        {
+            Abc_Print( -1, "The value cannot be given together with \"-l\".\n" );
+            goto usage;
+        }
+        if ( !Abc_PhysSignalLayerRc( pAbc, pLayer, 0, &Cap, &pLefLayer ) )
+            return 1;
+        Abc_FrameSetSignalCap( Cap );
+        Abc_Print( 1, "Signal capacitance: %.9g pF/um (layer %s).\n", Cap, pLefLayer );
+        return 0;
     }
     if ( argc == globalUtilOptind )
     {
@@ -335,10 +447,12 @@ int Abc_CommandSetSignalCap( Abc_Frame_t * pAbc, int argc, char ** argv )
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: set_signal_cap [-vh] [value]\n" );
+    Abc_Print( -2, "usage: set_signal_cap [-l layer] [-vh] [value]\n" );
     Abc_Print( -2, "\t          sets the unit capacitance of a signal wire used to extract\n" );
     Abc_Print( -2, "\t          the RC of the placed nets\n" );
     Abc_Print( -2, "\tvalue   : capacitance in pF/um [default = LEF routing layer]\n" );
+    Abc_Print( -2, "\t-l layer: take the capacitance of a routing layer read by\n" );
+    Abc_Print( -2, "\t          \"read_lef -t\", or \"auto\" for the layer used by default\n" );
     Abc_Print( -2, "\t-v      : print the new value [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );
     return 1;

@@ -50,7 +50,10 @@
 #   to undo the fastest drives.
 #   SIG_RES (ohm/um) and SIG_CAP (pF/um) set the unit wire RC used by the
 #   timing analysis; when they are empty, &phys_sta takes the resistance
-#   from the LEF routing layer and a default capacitance.
+#   from the LEF routing layer and a default capacitance.  Either may
+#   also select a routing layer of the technology LEF instead, for
+#   example SIG_RES="-l MET2" and SIG_CAP="-l MET2" (use a technology
+#   LEF that defines the layer capacitance, such as N551P6M_ecos.lef).
 #   STA_ARGS adds options to every timing analysis, for example
 #   STA_ARGS="-m" to use the minimum spanning tree instead of the
 #   Steiner tree as the wire model.  PLACE_ARGS adds options to every

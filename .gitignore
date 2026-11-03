@@ -72,3 +72,5 @@ abc.history
 phys_ws/
 # wire-model experiment workspace (test/phys_steiner_exp.sh)
 phys_steiner_ws/
+# unit-RC-from-layer check workspace (test/phys_signal_rc.sh)
+phys_rc_ws/
