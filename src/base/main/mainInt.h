@@ -116,7 +116,8 @@ struct Abc_Frame_t_
     void *          pAbcCon;       // constraint manager
     // physical synthesis
     void *          pLef;          // Phys_LefTech_t (technology LEF + macros)
-    void *          pPhysLib;      // Phys_Lib_t (Liberty data)
+    void *          pPhysLib;      // Phys_Lib_t (active Liberty corner, borrowed)
+    void *          vPhysLibs;     // Vec_Ptr_t of Phys_Lib_t, one per corner
     void *          pPhysMan;      // Phys_Man_t (physical-synthesis session)
     // timing constraints
     char *          pDrivingCell;  // name of the driving cell

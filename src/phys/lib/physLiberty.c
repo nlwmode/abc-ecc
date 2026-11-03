@@ -848,6 +848,152 @@ static void Lib_ParseRecover( Lib_Ctx_t * g )
 
 
 /*------------------------------------------------------------------------*/
+/* library-level PVT attributes                                           */
+/*------------------------------------------------------------------------*/
+
+/* Finds the value part of a statement "key : value;".  The key must start
+   on an identifier boundary, so that "operating_conditions" does not match
+   inside "default_operating_conditions". */
+static const char * Lib_FindAttr( const char * pData, const char * pKey )
+{
+    int nKey = (int)strlen( pKey );
+    const char * p = pData;
+    while ( (p = strstr( p, pKey )) != NULL )
+    {
+        const char * q;
+        if ( p == pData || !(isalnum((unsigned char)p[-1]) || p[-1] == '_') )
+        {
+            q = p + nKey;
+            while ( *q == ' ' || *q == '\t' )
+                q++;
+            if ( *q == ':' )
+                return q + 1;
+        }
+        p += nKey;
+    }
+    return NULL;
+}
+
+static int Lib_ParseAttrNum( const char * p, float * pVal )
+{
+    char * pEnd;
+    double Value;
+    while ( *p == ' ' || *p == '\t' )
+        p++;
+    Value = strtod( p, &pEnd );
+    if ( pEnd == p )
+        return 0;
+    *pVal = (float)Value;
+    return 1;
+}
+
+/* copies the name of "key : name;" or "key (name) {" */
+static char * Lib_ParseAttrName( const char * p )
+{
+    const char * q;
+    char * pName;
+    while ( *p == ' ' || *p == '\t' )
+        p++;
+    if ( *p == '(' )
+    {
+        p++;
+        while ( *p == ' ' || *p == '\t' )
+            p++;
+    }
+    if ( *p == '"' )
+        p++;
+    q = p;
+    while ( *q && *q != ';' && *q != '\n' && *q != ')' && *q != '"' &&
+            *q != ' ' && *q != '\t' )
+        q++;
+    if ( q == p )
+        return NULL;
+    pName = ABC_ALLOC( char, q - p + 1 );
+    memcpy( pName, p, (size_t)(q - p) );
+    pName[q - p] = '\0';
+    return pName;
+}
+
+static char * Lib_TokenDup( const char * p, int n )
+{
+    char * pNew = ABC_ALLOC( char, n + 1 );
+    memcpy( pNew, p, (size_t)n );
+    pNew[n] = '\0';
+    return pNew;
+}
+
+static int Lib_TokenIs( const char * p, int n, const char * pWord )
+{
+    int i;
+    if ( (int)strlen( pWord ) != n )
+        return 0;
+    for ( i = 0; i < n; i++ )
+        if ( tolower((unsigned char)p[i]) != tolower((unsigned char)pWord[i]) )
+            return 0;
+    return 1;
+}
+
+/* The operating condition carries the process word in front of "_mos", as
+   in ICS_N55_H7BR_tt_mos_TYP_1.2_25.  Returns a copy of that word, or of a
+   standalone tt/ss/ff token, or NULL when the name has neither. */
+static char * Lib_ParseProcWord( const char * pOper )
+{
+    static const char * pWords[] = { "tt", "ss", "ff", "fs", "sf" };
+    const char * p, * q, * pPrev = NULL;
+    int i, n, nPrev = 0;
+    for ( p = pOper; *p; p = *q ? q + 1 : q )
+    {
+        q = p;
+        while ( *q && *q != '_' )
+            q++;
+        n = (int)(q - p);
+        if ( n == 3 && Lib_TokenIs( p, n, "mos" ) && pPrev != NULL )
+            return Lib_TokenDup( pPrev, nPrev );
+        pPrev = p, nPrev = n;
+    }
+    for ( p = pOper; *p; p = *q ? q + 1 : q )
+    {
+        q = p;
+        while ( *q && *q != '_' )
+            q++;
+        n = (int)(q - p);
+        for ( i = 0; i < 5; i++ )
+            if ( Lib_TokenIs( p, n, pWords[i] ) )
+                return Lib_TokenDup( p, n );
+    }
+    return NULL;
+}
+
+/* Reads the PVT of a library.  The attributes are not part of the grammar,
+   so they are scanned in the file text. */
+static void Lib_ParsePvt( Phys_Lib_t * pLib, const char * pData )
+{
+    const char * p;
+    int fProc = 0, fVolt = 0, fTemp = 0;
+    pLib->PvtProcess = 1.0f;
+    if ( (p = Lib_FindAttr( pData, "nom_process" )) != NULL )
+        Lib_ParseAttrNum( p, &pLib->PvtProcess );
+    if ( (p = Lib_FindAttr( pData, "nom_voltage" )) != NULL )
+        fVolt = Lib_ParseAttrNum( p, &pLib->PvtVoltage );
+    if ( (p = Lib_FindAttr( pData, "nom_temperature" )) != NULL )
+        fTemp = Lib_ParseAttrNum( p, &pLib->PvtTemp );
+    if ( (p = Lib_FindAttr( pData, "default_operating_conditions" )) == NULL )
+        p = Lib_FindAttr( pData, "operating_conditions" );
+    if ( p != NULL )
+    {
+        char * pOper = Lib_ParseAttrName( p );
+        if ( pOper != NULL )
+        {
+            pLib->pProc = Lib_ParseProcWord( pOper );
+            ABC_FREE( pOper );
+            fProc = pLib->pProc != NULL;
+        }
+    }
+    pLib->fPvt = fProc && fVolt && fTemp;
+}
+
+
+/*------------------------------------------------------------------------*/
 /* generated parser / scanner entry points                                */
 /*------------------------------------------------------------------------*/
 
@@ -873,7 +1019,24 @@ Phys_Lib_t * Phys_LibertyRead( const char * pFileName, int fVerbose )
     if ( pData == NULL )
         return NULL;
 
+    /* read the operating condition before the rewrite below, which also
+       touches the temperature suffix of its name */
     pLib = ABC_CALLOC( Phys_Lib_t, 1 );
+    Lib_ParsePvt( pLib, pData );
+
+    /* Liberty identifiers sometimes carry the temperature, as in
+       ICS_N55_H7BR_ss_mos_Cworst_1.08_-40, but the name rule of the lexer
+       does not accept '-'.  These identifiers are not used by the flow, so
+       rewrite the '-' of such a "_-<digit>" sequence to '_' to keep the
+       file parseable. */
+    {
+        int k;
+        for ( k = 1; k + 1 < nSize; k++ )
+            if ( pData[k] == '-' && pData[k-1] == '_' &&
+                 isdigit( (unsigned char)pData[k+1] ) )
+                pData[k] = '_';
+    }
+
     Phys_UnitsInit( &pLib->Units );
     pLib->vCells      = Vec_PtrAlloc( 1024 );
     pLib->vTemplates  = Vec_PtrAlloc( 64 );
@@ -906,11 +1069,17 @@ Phys_Lib_t * Phys_LibertyRead( const char * pFileName, int fVerbose )
 
     Phys_LibFinish( pLib );
     if ( fVerbose )
+    {
+        char Name[128];
         fprintf( stdout, "Liberty: parsed library \"%s\": %d cells, %d templates "
-                 "(time=%.1f ps/unit, cap=%.4f pF/unit, res=%.4f kOhm/unit).\n",
+                 "(time=%.1f ps/unit, cap=%.4f pF/unit, res=%.4f kOhm/unit",
                  pLib->pName ? pLib->pName : "", Vec_PtrSize(pLib->vCells),
                  Vec_PtrSize(pLib->vTemplates), pLib->Units.TimeScale,
                  pLib->Units.CapScale, pLib->Units.ResScale );
+        if ( Phys_LibPvtName( pLib, Name, sizeof(Name) ) )
+            fprintf( stdout, ", PVT %s", Name );
+        fprintf( stdout, ").\n" );
+    }
     return pLib;
 }
 
@@ -921,6 +1090,80 @@ void Phys_LibFinish( Phys_Lib_t * p )
     for ( i = 0; i < Vec_PtrSize(p->vCells); i++ )
         ((Phys_LibCell_t *)Vec_PtrEntry(p->vCells, i))->CellId = i;
     Phys_HashBuild( &p->vCellHash, p->vCells );
+}
+
+void Phys_LibSetCorner( Phys_Lib_t * p, const char * pCorner )
+{
+    if ( p == NULL )
+        return;
+    ABC_FREE( p->pCorner );
+    p->pCorner = Lib_StrDup( pCorner ? pCorner : "default" );
+}
+
+int Phys_LibPvtName( Phys_Lib_t * p, char * pBuf, int nBuf )
+{
+    if ( p == NULL || !p->fPvt || p->pProc == NULL )
+        return 0;
+    if ( nBuf > 0 )
+        snprintf( pBuf, (size_t)nBuf, "%s_%g_%g",
+                  p->pProc, p->PvtVoltage, p->PvtTemp );
+    return 1;
+}
+
+int Phys_LibPvtRank( Phys_Lib_t * p )
+{
+    if ( p == NULL || !p->fPvt || p->pProc == NULL )
+        return 4;
+    if ( Lib_TokenIs( p->pProc, 2, "ff" ) || Lib_TokenIs( p->pProc, 2, "fs" ) )
+        return 0;
+    if ( Lib_TokenIs( p->pProc, 2, "tt" ) )
+        return 1;
+    if ( Lib_TokenIs( p->pProc, 2, "ss" ) || Lib_TokenIs( p->pProc, 2, "sf" ) )
+        return 2;
+    return 3;
+}
+
+int Phys_LibMerge( Phys_Lib_t * pDst, Phys_Lib_t * pSrc )
+{
+    Phys_LibCell_t * pCell;
+    int i, nConflict = 0;
+    if ( pDst == NULL || pSrc == NULL )
+        return 0;
+    /* refuse the merge before touching pDst, so a failed read leaves the
+       corner exactly as it was */
+    Vec_PtrForEachEntry( Phys_LibCell_t *, pSrc->vCells, pCell, i )
+        if ( Phys_LibFindCell( pDst, pCell->pName ) != NULL )
+        {
+            if ( nConflict < 5 )
+                fprintf( stderr, "Liberty: cell \"%s\" is already in corner \"%s\".\n",
+                         pCell->pName, pDst->pCorner ? pDst->pCorner : "default" );
+            nConflict++;
+        }
+    if ( nConflict )
+    {
+        fprintf( stderr, "Liberty: %d cell(s) of the file are already in corner \"%s\"; "
+                         "read the file into another corner with \"-k\", or use a "
+                         "library with different cell names.\n",
+                 nConflict, pDst->pCorner ? pDst->pCorner : "default" );
+        return 0;
+    }
+    /* the cells move to the destination; the source keeps its templates,
+       which are only needed while parsing, and releases them when it is
+       freed by the caller */
+    Vec_PtrForEachEntry( Phys_LibCell_t *, pSrc->vCells, pCell, i )
+        Vec_PtrPush( pDst->vCells, pCell );
+    Vec_PtrClear( pSrc->vCells );
+    /* a supergate already synthesized from the old cell set no longer
+       represents the merged library */
+    if ( pDst->fSuperBuilt )
+    {
+        Vec_PtrForEachEntry( Phys_LibCell_t *, pDst->vSuperCells, pCell, i )
+            Phys_LibCellFree( pCell );
+        Vec_PtrClear( pDst->vSuperCells );
+        pDst->fSuperBuilt = 0;
+    }
+    Phys_LibFinish( pDst );
+    return 1;
 }
 
 void Phys_LibFree( Phys_Lib_t ** pp )
@@ -944,6 +1187,8 @@ void Phys_LibFree( Phys_Lib_t ** pp )
     Vec_PtrFree( p->vTemplates );
     Vec_IntFreeP( &p->vCellHash );
     ABC_FREE( p->pName );
+    ABC_FREE( p->pCorner );
+    ABC_FREE( p->pProc );
     Phys_UnitsClear( &p->Units );
     ABC_FREE( p );
 }

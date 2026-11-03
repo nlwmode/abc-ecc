@@ -90,6 +90,12 @@ typedef struct Phys_Man_t_
 
 extern Phys_Man_t * Phys_ManStart( Phys_LefTech_t * pLef, Phys_Lib_t * pLib, int fVerbose );
 extern void         Phys_ManStop( Phys_Man_t ** pp );
+/* Switches the session to another Liberty corner.  The cell instances
+   keep referring to the same cell names (and to the synthetic supergates
+   of their pattern), so every bound cell is resolved again in the new
+   library and the cached timing is dropped.  Returns 0, leaving the
+   session untouched, when a bound cell is missing from the new library. */
+extern int          Phys_ManSetLib( Phys_Man_t * p, Phys_Lib_t * pLib );
 extern void         Phys_ManResize( Phys_Man_t * p, int nObjs );
 extern void         Phys_ManClearPlace( Phys_Man_t * p );
 extern void         Phys_ManClearCong( Phys_Man_t * p );

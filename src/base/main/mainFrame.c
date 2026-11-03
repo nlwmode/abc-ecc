@@ -274,7 +274,20 @@ void Abc_FrameDeallocate( Abc_Frame_t * p )
 
     if ( p->pLef )
         Phys_LefTechFree( (Phys_LefTech_t **)&p->pLef );
-    if ( p->pPhysLib )
+    /* the corner libraries own the Liberty data; pPhysLib points into
+       vPhysLibs and is not freed separately */
+    if ( p->vPhysLibs )
+    {
+        Vec_Ptr_t * vLibs = (Vec_Ptr_t *)p->vPhysLibs;
+        Phys_Lib_t * pLib;
+        int i;
+        Vec_PtrForEachEntry( Phys_Lib_t *, vLibs, pLib, i )
+            Phys_LibFree( &pLib );
+        Vec_PtrFree( vLibs );
+        p->vPhysLibs = NULL;
+        p->pPhysLib = NULL;
+    }
+    else if ( p->pPhysLib )
         Phys_LibFree( (Phys_Lib_t **)&p->pPhysLib );
     Phys_ManStop( (Phys_Man_t **)&p->pPhysMan );
 

@@ -34,6 +34,105 @@ Phys_Man_t * Phys_ManStart( Phys_LefTech_t * pLef, Phys_Lib_t * pLib, int fVerbo
     return p;
 }
 
+/* Returns the cell of pLib that replaces pOld: a library cell or a
+   synthetic supergate, both of which are found by name (Phys_LibFindCell
+   searches the supergates as well). */
+static Phys_LibCell_t * Phys_ManResolveCell( Phys_Lib_t * pLib, Phys_LibCell_t * pOld )
+{
+    return pOld != NULL ? Phys_LibFindCell( pLib, pOld->pName ) : NULL;
+}
+
+int Phys_ManSetLib( Phys_Man_t * p, Phys_Lib_t * pLib )
+{
+    Phys_LibCell_t * pOld, * pNew;
+    Phys_LibPin_t * pPin;
+    Vec_Ptr_t * vPins;
+    int i, k, fSuper = 0, nMissing = 0;
+    if ( p == NULL || pLib == NULL || p->pLib == pLib )
+        return 1;
+    /* a virtual (pre-mapping) binding uses synthetic supergates, which the
+       new library has to synthesize before they can be resolved by name */
+    if ( p->vLitToCell != NULL )
+        for ( i = 0; i < Vec_PtrSize(p->vLitToCell); i++ )
+            if ( (pOld = (Phys_LibCell_t *)Vec_PtrEntry(p->vLitToCell, i)) != NULL &&
+                 pOld->pFormula != NULL )
+                fSuper = 1;
+    if ( fSuper && !pLib->fSuperBuilt && Phys_SuperBuild( pLib, p->pLef ) == 0 )
+    {
+        fprintf( stderr, "Liberty: the corner \"%s\" cannot realize the AIG patterns "
+                         "with supergates.\n", pLib->pCorner ? pLib->pCorner : "default" );
+        return 0;
+    }
+    /* check the whole binding before changing anything */
+    if ( p->vLitToCell != NULL )
+        for ( i = 0; i < Vec_PtrSize(p->vLitToCell); i++ )
+        {
+            pOld = (Phys_LibCell_t *)Vec_PtrEntry( p->vLitToCell, i );
+            if ( pOld == NULL )
+                continue;
+            pNew = Phys_ManResolveCell( pLib, pOld );
+            if ( pNew == NULL )
+            {
+                if ( nMissing < 5 )
+                    fprintf( stderr, "Liberty: cell \"%s\" of the binding is not in "
+                                     "corner \"%s\".\n", pOld->pName,
+                             pLib->pCorner ? pLib->pCorner : "default" );
+                nMissing++;
+                continue;
+            }
+            vPins = (Vec_Ptr_t *)Vec_PtrEntry( p->vLitToPins, i );
+            Vec_PtrForEachEntry( Phys_LibPin_t *, vPins, pPin, k )
+                if ( Phys_LibCellFindPin( pNew, pPin->pName ) == NULL )
+                {
+                    if ( nMissing < 5 )
+                        fprintf( stderr, "Liberty: pin \"%s\" of cell \"%s\" is not in "
+                                         "corner \"%s\".\n", pPin->pName, pOld->pName,
+                                 pLib->pCorner ? pLib->pCorner : "default" );
+                    nMissing++;
+                    break;
+                }
+        }
+    if ( nMissing )
+    {
+        fprintf( stderr, "Liberty: %d bound cell(s) are missing from corner \"%s\"; "
+                         "the timing library is not switched.\n", nMissing,
+                 pLib->pCorner ? pLib->pCorner : "default" );
+        return 0;
+    }
+    /* replace the cell and pin pointers; the pin vectors stay owned by
+       vLitToPins and the pins keep the fanin order of the cell */
+    for ( i = 0; p->vLitToCell != NULL && i < Vec_PtrSize(p->vLitToCell); i++ )
+    {
+        pOld = (Phys_LibCell_t *)Vec_PtrEntry( p->vLitToCell, i );
+        if ( pOld == NULL )
+            continue;
+        pNew = Phys_ManResolveCell( pLib, pOld );
+        Vec_PtrWriteEntry( p->vLitToCell, i, pNew );
+        vPins = (Vec_Ptr_t *)Vec_PtrEntry( p->vLitToPins, i );
+        Vec_PtrForEachEntry( Phys_LibPin_t *, vPins, pPin, k )
+            Vec_PtrWriteEntry( vPins, k, Phys_LibCellFindPin( pNew, pPin->pName ) );
+        if ( pNew->pFormula == NULL && p->pLef != NULL )
+        {
+            Phys_LefMacro_t * pMacro = Phys_LefFindMacro( p->pLef, pNew->pName );
+            if ( pMacro != NULL )
+                pNew->MacroId = pMacro->Id;
+        }
+    }
+    /* the per-object view aliases the literal view for mapped cells; the
+       virtual cells have no mapping literal and are resolved by name */
+    for ( i = 0; p->vObjToCell != NULL && i < Vec_PtrSize(p->vObjToCell); i++ )
+    {
+        int lit = p->vObjCellLit != NULL ? Vec_IntEntry( p->vObjCellLit, i ) : -1;
+        if ( lit >= 0 && lit < Vec_PtrSize(p->vLitToCell) )
+            Vec_PtrWriteEntry( p->vObjToCell, i, Vec_PtrEntry( p->vLitToCell, lit ) );
+        else if ( (pOld = (Phys_LibCell_t *)Vec_PtrEntry( p->vObjToCell, i )) != NULL )
+            Vec_PtrWriteEntry( p->vObjToCell, i, Phys_ManResolveCell( pLib, pOld ) );
+    }
+    p->pLib = pLib;
+    Phys_ManClearTiming( p );
+    return 1;
+}
+
 void Phys_ManClearCong( Phys_Man_t * p )
 {
     if ( p == NULL )

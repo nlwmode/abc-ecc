@@ -10,7 +10,8 @@
                Commands implemented here so far:
                  read_lef       - read a technology LEF (-t) or a cell LEF
                  read_tech_lef  - read a technology LEF (same as "read_lef -t")
-                 read_liberty   - read a Liberty library with the new parser
+                 read_liberty   - read a Liberty library with the new parser,
+                                  one library per corner ("-k corner")
                  set_signal_res - unit wire resistance for RC extraction
                  set_signal_cap - unit wire capacitance for RC extraction
                                   (both take a value, or a metal layer with -l)
@@ -38,6 +39,158 @@
 #include "abcPhys.h"
 
 ABC_NAMESPACE_IMPL_START
+
+
+/**Function*************************************************************
+
+  Synopsis    [Corner bookkeeping of the Liberty libraries]
+
+  Description [The frame holds one Phys_Lib_t per corner in vPhysLibs,
+               and pPhysLib points at the active corner.  "read_liberty"
+               adds a library or merges the cells of another file into an
+               existing corner; without "-k" the corner is named after the
+               PVT of the file.  The corners are ordered by PVT (process
+               from fast to slow, then voltage, then temperature) and the
+               middle one is the default corner of "&phys_start".
+               "&phys_start" and "&phys_sta" select the corner that the
+               session and the timing analysis use.]
+
+  SideEffects []
+
+***********************************************************************/
+static Vec_Ptr_t * Abc_PhysLibVec( Abc_Frame_t * pAbc, int fCreate )
+{
+    if ( pAbc->vPhysLibs == NULL && fCreate )
+        pAbc->vPhysLibs = Vec_PtrAlloc( 4 );
+    return (Vec_Ptr_t *)pAbc->vPhysLibs;
+}
+
+static Phys_Lib_t * Abc_PhysFindCorner( Abc_Frame_t * pAbc, const char * pCorner )
+{
+    Vec_Ptr_t * vLibs = Abc_PhysLibVec( pAbc, 0 );
+    Phys_Lib_t * pLib;
+    int i;
+    if ( vLibs == NULL )
+        return NULL;
+    Vec_PtrForEachEntry( Phys_Lib_t *, vLibs, pLib, i )
+        if ( !strcmp( pLib->pCorner ? pLib->pCorner : "default", pCorner ) )
+            return pLib;
+    return NULL;
+}
+
+/* Ordering of the corners used to pick the default one: process from fast
+   to slow, then voltage, then temperature.  Corners without PVT compare
+   equal and so keep the read order. */
+static int Abc_PhysCornerCmp( Phys_Lib_t * p0, Phys_Lib_t * p1 )
+{
+    int r0 = Phys_LibPvtRank( p0 ), r1 = Phys_LibPvtRank( p1 );
+    if ( r0 != r1 )
+        return r0 < r1 ? -1 : 1;
+    if ( r0 == 4 )
+        return 0;
+    if ( p0->PvtVoltage != p1->PvtVoltage )
+        return p0->PvtVoltage < p1->PvtVoltage ? -1 : 1;
+    if ( p0->PvtTemp != p1->PvtTemp )
+        return p0->PvtTemp < p1->PvtTemp ? -1 : 1;
+    return strcmp( p0->pProc ? p0->pProc : "", p1->pProc ? p1->pProc : "" );
+}
+
+/* The default corner is the middle one after ordering the corners by PVT;
+   with an even number it is the faster of the two middle corners. */
+static Phys_Lib_t * Abc_PhysDefaultCorner( Abc_Frame_t * pAbc )
+{
+    Vec_Ptr_t * vLibs = Abc_PhysLibVec( pAbc, 0 );
+    Vec_Ptr_t * vSort;
+    Phys_Lib_t * pLib, * pCur;
+    int i, k, n;
+    if ( vLibs == NULL || (n = Vec_PtrSize(vLibs)) == 0 )
+        return NULL;
+    vSort = Vec_PtrAlloc( n );
+    Vec_PtrForEachEntry( Phys_Lib_t *, vLibs, pLib, i )
+    {
+        /* stable insertion: bubble the new corner down to its place */
+        Vec_PtrPush( vSort, pLib );
+        for ( k = Vec_PtrSize(vSort) - 1; k > 0; k-- )
+        {
+            pCur = (Phys_Lib_t *)Vec_PtrEntry( vSort, k - 1 );
+            if ( Abc_PhysCornerCmp( pCur, pLib ) <= 0 )
+                break;
+            Vec_PtrWriteEntry( vSort, k, pCur );
+            Vec_PtrWriteEntry( vSort, k - 1, pLib );
+        }
+    }
+    pLib = (Phys_Lib_t *)Vec_PtrEntry( vSort, (n - 1) / 2 );
+    Vec_PtrFree( vSort );
+    return pLib;
+}
+
+/* Reports how the cell names of a corner compare with the default corner.
+   "&phys_sta -k" resolves every bound cell and every pin by name, so a
+   corner that lacks a name of the default corner can only time a design
+   that does not use it; mapping into it can fail as well.  The comparison
+   is a report, not a restriction: partial corners stay usable. */
+static void Abc_PhysCornerCoverage( Abc_Frame_t * pAbc, Phys_Lib_t * pLib )
+{
+    Phys_Lib_t * pRef = Abc_PhysDefaultCorner( pAbc );
+    Phys_LibCell_t * pCell;
+    Vec_Ptr_t * vOnlyRef, * vOnlyLib;
+    int i;
+    if ( pLib == NULL || pRef == NULL || pLib == pRef )
+        return;
+    vOnlyRef = Vec_PtrAlloc( 8 );
+    vOnlyLib = Vec_PtrAlloc( 8 );
+    Vec_PtrForEachEntry( Phys_LibCell_t *, pRef->vCells, pCell, i )
+        if ( Phys_LibFindCell( pLib, pCell->pName ) == NULL )
+            Vec_PtrPush( vOnlyRef, pCell );
+    Vec_PtrForEachEntry( Phys_LibCell_t *, pLib->vCells, pCell, i )
+        if ( Phys_LibFindCell( pRef, pCell->pName ) == NULL )
+            Vec_PtrPush( vOnlyLib, pCell );
+    if ( Vec_PtrSize(vOnlyRef) != 0 || Vec_PtrSize(vOnlyLib) != 0 )
+    {
+        Abc_Print( 1, "  Corner \"%s\" and the default corner \"%s\" differ: %d cell(s) only in the default",
+                   pLib->pCorner ? pLib->pCorner : "default",
+                   pRef->pCorner ? pRef->pCorner : "default", Vec_PtrSize(vOnlyRef) );
+        for ( i = 0; i < Vec_PtrSize(vOnlyRef) && i < 3; i++ )
+            Abc_Print( 1, "%s%s", i ? ", " : " (",
+                       ((Phys_LibCell_t *)Vec_PtrEntry(vOnlyRef, i))->pName );
+        if ( Vec_PtrSize(vOnlyRef) != 0 )
+            Abc_Print( 1, "%s)", Vec_PtrSize(vOnlyRef) > i ? ", ..." : "" );
+        Abc_Print( 1, ", %d cell(s) only in this corner", Vec_PtrSize(vOnlyLib) );
+        for ( i = 0; i < Vec_PtrSize(vOnlyLib) && i < 3; i++ )
+            Abc_Print( 1, "%s%s", i ? ", " : " (",
+                       ((Phys_LibCell_t *)Vec_PtrEntry(vOnlyLib, i))->pName );
+        if ( Vec_PtrSize(vOnlyLib) != 0 )
+            Abc_Print( 1, "%s)", Vec_PtrSize(vOnlyLib) > i ? ", ..." : "" );
+        Abc_Print( 1, ".\n" );
+    }
+    Vec_PtrFree( vOnlyRef );
+    Vec_PtrFree( vOnlyLib );
+}
+
+static void Abc_PhysPrintCorners( Abc_Frame_t * pAbc )
+{
+    Vec_Ptr_t * vLibs = Abc_PhysLibVec( pAbc, 0 );
+    Phys_Lib_t * pLib, * pDefault = Abc_PhysDefaultCorner( pAbc );
+    int i;
+    if ( vLibs == NULL )
+    {
+        Abc_Print( 1, "No Liberty corner is loaded.\n" );
+        return;
+    }
+    Vec_PtrForEachEntry( Phys_Lib_t *, vLibs, pLib, i )
+    {
+        Abc_Print( 1, "Corner \"%s\": %d cells",
+                   pLib->pCorner ? pLib->pCorner : "default", Vec_PtrSize(pLib->vCells) );
+        if ( pLib->fPvt )
+            Abc_Print( 1, ", PVT %s/%g V/%g C", pLib->pProc,
+                       pLib->PvtVoltage, pLib->PvtTemp );
+        if ( pLib == pDefault )
+            Abc_Print( 1, ", default" );
+        if ( pLib == (Phys_Lib_t *)pAbc->pPhysLib )
+            Abc_Print( 1, ", active" );
+        Abc_Print( 1, ".\n" );
+    }
+}
 
 
 /**Function*************************************************************
@@ -79,6 +232,13 @@ int Abc_CommandReadLef( Abc_Frame_t * pAbc, int argc, char ** argv )
         goto usage;
     if ( fTech )
     {
+        /* replacing the technology drops every macro the open session
+           still refers to, so the session has to be closed first */
+        if ( pAbc->pPhysMan != NULL )
+        {
+            Abc_Print( -1, "A physical-synthesis session is open. Run \"&phys_end\" before reading a technology LEF.\n" );
+            return 1;
+        }
         if ( pAbc->pLef != NULL )
             Phys_LefTechFree( (Phys_LefTech_t **)&pAbc->pLef );
         pLef = Phys_LefTechAlloc();
@@ -186,13 +346,21 @@ usage:
 ***********************************************************************/
 int Abc_CommandReadLiberty( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
-    int c, fVerbose = 0;
-    Phys_Lib_t * pLib;
+    int c, fVerbose = 0, fPvtName = 0;
+    char * pCornerName = NULL;
+    char CornerName[128];
+    Phys_Lib_t * pLib, * pCorner;
+    Vec_Ptr_t * vLibs;
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "vh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "k:vh" )) != EOF )
     {
         switch ( c )
         {
+        case 'k':
+            if ( globalUtilOptarg == NULL )
+                goto usage;
+            pCornerName = (char *)globalUtilOptarg;
+            break;
         case 'v':
             fVerbose ^= 1;
             break;
@@ -204,19 +372,64 @@ int Abc_CommandReadLiberty( Abc_Frame_t * pAbc, int argc, char ** argv )
     }
     if ( argc != globalUtilOptind + 1 )
         goto usage;
+    if ( pAbc->pPhysMan != NULL )
+    {
+        Abc_Print( -1, "A physical-synthesis session is open. Run \"&phys_end\" before reading Liberty data.\n" );
+        return 1;
+    }
     pLib = Phys_LibertyRead( argv[globalUtilOptind], 1 );
     if ( pLib == NULL )
         return 1;
-    if ( pAbc->pPhysLib != NULL )
-        Phys_LibFree( (Phys_Lib_t **)&pAbc->pPhysLib );
-    pAbc->pPhysLib = pLib;
+    /* without "-k" the corner is named after the PVT of the file, so files
+       of the same operating condition meet in one corner and files of
+       different corners stay apart */
+    if ( pCornerName == NULL &&
+         Phys_LibPvtName( pLib, CornerName, sizeof(CornerName) ) )
+    {
+        pCornerName = CornerName;
+        fPvtName = 1;
+    }
+    Phys_LibSetCorner( pLib, pCornerName );
+    vLibs = Abc_PhysLibVec( pAbc, 1 );
+    pCorner = Abc_PhysFindCorner( pAbc, pLib->pCorner );
+    if ( pCorner == NULL )
+    {
+        Vec_PtrPush( vLibs, pLib );
+        pCorner = pLib;
+        Abc_Print( 1, "Liberty: corner \"%s\" holds %d cells%s.\n",
+                   pCorner->pCorner, Vec_PtrSize(pCorner->vCells),
+                   fPvtName ? " (named after the file's PVT)" : "" );
+    }
+    else
+    {
+        int nCells = Vec_PtrSize( pCorner->vCells );
+        if ( !Phys_LibMerge( pCorner, pLib ) )
+        {
+            Phys_LibFree( &pLib );
+            Abc_Print( -1, "The file was not added to Liberty corner \"%s\".\n", pCorner->pCorner );
+            return 1;
+        }
+        Phys_LibFree( &pLib );
+        Abc_Print( 1, "Liberty: corner \"%s\" holds %d cells (%d added).\n",
+                   pCorner->pCorner, Vec_PtrSize(pCorner->vCells),
+                   Vec_PtrSize(pCorner->vCells) - nCells );
+    }
+    /* the corner just read becomes the active one; "&phys_start -k" and
+       "&phys_sta -k" select another corner explicitly */
+    pAbc->pPhysLib = pCorner;
     if ( fVerbose )
-        Phys_LibPrint( pLib );
+        Phys_LibPrint( pCorner );
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: read_liberty [-vh] <file>\n" );
+    Abc_Print( -2, "usage: read_liberty [-k corner] [-vh] <file>\n" );
     Abc_Print( -2, "\t          reads a Liberty library with the physical-synthesis parser\n" );
+    Abc_Print( -2, "\t-k corner: corner the file belongs to [default = the name derived\n" );
+    Abc_Print( -2, "\t          from the PVT of the file, <process>_<voltage>_<temperature>\n" );
+    Abc_Print( -2, "\t          (e.g. tt_1.2_25), or \"default\" when the file has no PVT];\n" );
+    Abc_Print( -2, "\t          a file read into an existing corner adds its cells, which must\n" );
+    Abc_Print( -2, "\t          have names not present in that corner yet; the corner of the\n" );
+    Abc_Print( -2, "\t          last file becomes the active one\n" );
     Abc_Print( -2, "\t-v      : print library information [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );
     return 1;
@@ -523,21 +736,66 @@ int Abc_CommandPrintPhys( Abc_Frame_t * pAbc, int argc, char ** argv )
     }
     if ( pAbc->pPhysLib != NULL )
     {
-        Phys_Lib_t * pLib = (Phys_Lib_t *)pAbc->pPhysLib;
-        Abc_Print( 1, "Liberty: \"%s\", %d cells, %d templates, units time=%.1f ps cap=%.4f pF res=%.4f kOhm.\n",
-                   pLib->pName ? pLib->pName : "", Vec_PtrSize(pLib->vCells),
-                   Vec_PtrSize(pLib->vTemplates), pLib->Units.TimeScale,
-                   pLib->Units.CapScale, pLib->Units.ResScale );
-        if ( fVerbose )
-            Phys_LibPrint( pLib );
+        Vec_Ptr_t * vLibs = Abc_PhysLibVec( pAbc, 0 );
+        Vec_Ptr_t * vTemp = NULL;
+        Phys_Lib_t * pLib, * pDefault = Abc_PhysDefaultCorner( pAbc );
+        int i;
+        if ( vLibs == NULL )
+        {
+            /* a library assigned without the corner vector (defensive) */
+            vLibs = vTemp = Vec_PtrAlloc( 1 );
+            Vec_PtrPush( vTemp, pAbc->pPhysLib );
+        }
+        if ( pDefault == NULL )
+            pDefault = (Phys_Lib_t *)pAbc->pPhysLib;
+        Vec_PtrForEachEntry( Phys_Lib_t *, vLibs, pLib, i )
+        {
+            Abc_Print( 1, "Liberty[%s]: \"%s\", %d cells, %d templates, units "
+                          "time=%.1f ps cap=%.4f pF res=%.4f kOhm",
+                       pLib->pCorner ? pLib->pCorner : "default",
+                       pLib->pName ? pLib->pName : "", Vec_PtrSize(pLib->vCells),
+                       Vec_PtrSize(pLib->vTemplates), pLib->Units.TimeScale,
+                       pLib->Units.CapScale, pLib->Units.ResScale );
+            if ( pLib->fPvt )
+                Abc_Print( 1, ", PVT %s/%g V/%g C", pLib->pProc,
+                           pLib->PvtVoltage, pLib->PvtTemp );
+            if ( pLib == (Phys_Lib_t *)pAbc->pPhysLib )
+                Abc_Print( 1, " (active)" );
+            if ( pLib == pDefault )
+                Abc_Print( 1, " (default)" );
+            Abc_Print( 1, ".\n" );
+            if ( fVerbose )
+                Phys_LibPrint( pLib );
+        }
+        /* cell names are the only link between the corners: report the
+           ones that a corner does not share with the default corner */
+        Vec_PtrForEachEntry( Phys_Lib_t *, vLibs, pLib, i )
+            Abc_PhysCornerCoverage( pAbc, pLib );
         if ( pCellName != NULL )
         {
-            Phys_LibCell_t * pCell = Phys_LibFindCell( pLib, pCellName );
+            Phys_Lib_t * pFound = NULL;
+            Phys_LibCell_t * pCell;
+            /* prefer the active corner, then the others in the read order */
+            if ( Phys_LibFindCell( (Phys_Lib_t *)pAbc->pPhysLib, pCellName ) != NULL )
+                pFound = (Phys_Lib_t *)pAbc->pPhysLib;
+            Vec_PtrForEachEntry( Phys_Lib_t *, vLibs, pLib, i )
+            {
+                if ( pFound != NULL )
+                    break;
+                if ( Phys_LibFindCell( pLib, pCellName ) != NULL )
+                    pFound = pLib;
+            }
+            pCell = pFound != NULL ? Phys_LibFindCell( pFound, pCellName ) : NULL;
             if ( pCell == NULL )
                 Abc_Print( 0, "Cannot find Liberty cell \"%s\".\n", pCellName );
             else
-                Phys_LibCellPrint( pLib, pCell );
+            {
+                Abc_Print( 1, "Liberty cell in corner \"%s\":\n",
+                           pFound->pCorner ? pFound->pCorner : "default" );
+                Phys_LibCellPrint( pFound, pCell );
+            }
         }
+        Vec_PtrFreeP( &vTemp );
     }
     return 0;
 
@@ -625,12 +883,18 @@ static int Abc_PhysInstallGenlib( Abc_Frame_t * pAbc, int fVerbose )
 ***********************************************************************/
 int Abc_CommandPhysStart( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
+    char * pCornerName = NULL;
     int c, fVerbose = 0;
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "vh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "k:vh" )) != EOF )
     {
         switch ( c )
         {
+        case 'k':
+            if ( globalUtilOptarg == NULL )
+                goto usage;
+            pCornerName = (char *)globalUtilOptarg;
+            break;
         case 'v':
             fVerbose ^= 1;
             break;
@@ -652,25 +916,48 @@ int Abc_CommandPhysStart( Abc_Frame_t * pAbc, int argc, char ** argv )
         Abc_Print( -1, "The Liberty library is not loaded. Run \"read_liberty\" first.\n" );
         return 1;
     }
+    if ( pCornerName != NULL )
+    {
+        Phys_Lib_t * pLib = Abc_PhysFindCorner( pAbc, pCornerName );
+        if ( pLib == NULL )
+        {
+            Abc_Print( -1, "Cannot find the Liberty corner \"%s\".\n", pCornerName );
+            Abc_PhysPrintCorners( pAbc );
+            return 1;
+        }
+        pAbc->pPhysLib = pLib;
+    }
+    else
+    {
+        /* the corner in the middle of the PVT order is the default, so the
+           session does not depend on the order in which the files were read */
+        Phys_Lib_t * pLib = Abc_PhysDefaultCorner( pAbc );
+        if ( pLib != NULL )
+            pAbc->pPhysLib = pLib;
+    }
     if ( pAbc->pLef == NULL )
-        Abc_Print( 1, "Warning: no LEF data is loaded. Run \"read_lef -t\" and \"read_lef\" "
-                      "to enable placement and STA.\n" );
+        Abc_Print( 1, "Warning: no LEF data is loaded; placement and STA are disabled. "
+                      "Run \"read_lef -t\" and \"read_lef\" before \"&phys_start\" to enable them.\n" );
     if ( !Abc_PhysInstallGenlib( pAbc, fVerbose ) )
         return 1;
     pAbc->pPhysMan = Phys_ManStart( (Phys_LefTech_t *)pAbc->pLef,
                                     (Phys_Lib_t *)pAbc->pPhysLib, fVerbose );
-    Abc_Print( 1, "Started physical-synthesis session: %d Liberty cells, %d genlib gates%s.\n",
+    Abc_Print( 1, "Started physical-synthesis session: corner \"%s\", %d Liberty cells, %d genlib gates%s.\n",
+               ((Phys_Lib_t *)pAbc->pPhysLib)->pCorner ? ((Phys_Lib_t *)pAbc->pPhysLib)->pCorner : "default",
                Vec_PtrSize( ((Phys_Lib_t *)pAbc->pPhysLib)->vCells ),
                Mio_LibraryReadGateNum( (Mio_Library_t *)Abc_FrameReadLibGen() ),
                pAbc->pLef ? ", LEF loaded" : "" );
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: &phys_start [-vh]\n" );
+    Abc_Print( -2, "usage: &phys_start [-k corner] [-vh]\n" );
     Abc_Print( -2, "\t          opens a physical-synthesis session\n" );
     Abc_Print( -2, "\t          (requires that \"read_liberty\" has been run)\n" );
     Abc_Print( -2, "\t          the flow is &phys_start; &phys_bind; &phys_place;\n" );
     Abc_Print( -2, "\t          &phys_sta; &phys_map; &phys_end\n" );
+    Abc_Print( -2, "\t-k corner: Liberty corner of the session [default = the middle\n" );
+    Abc_Print( -2, "\t          corner in the PVT order (process fast to slow, then voltage,\n" );
+    Abc_Print( -2, "\t          then temperature); corners without PVT follow in read order]\n" );
     Abc_Print( -2, "\t-v      : print detailed information [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );
     return 1;
@@ -1144,6 +1431,20 @@ static int Abc_PhysBind( Abc_Frame_t * pAbc, const char * pCellName, int fVerbos
                    nBound - nInv - nBuf, nInv, nBuf );
     Abc_Print( 1, "Bound %d cell instances to Liberty/LEF (%d not found in Liberty, %d bad cell ids, %d without LEF macro).\n",
                nBound, nNoLib, nSkip, nNoMacro );
+    if ( nNoLib > 0 || nSkip > 0 )
+    {
+        /* The mapper works with the genlib library of the corner that was
+           active in "&phys_start"; "&phys_sta -k" moves the timing corner
+           but not that library.  A cell of the mapping that the timing
+           corner does not have would be placed and timed as a plain wire,
+           so the flow stops here instead of reporting a wrong timing. */
+        Abc_Print( -1, "%d mapped cell(s) of the network are missing from Liberty corner \"%s\".\n",
+                   nNoLib + nSkip, pMan->pLib->pCorner ? pMan->pLib->pCorner : "default" );
+        Abc_Print( -2, "The mapping library is the one built by \"&phys_start\". Read the same "
+                       "cell families into this corner (\"read_liberty -k\"), or map in the "
+                       "corner that holds the mapping library, then run \"&phys_sta -k\".\n" );
+        return 1;
+    }
     return 0;
 }
 
@@ -1193,7 +1494,8 @@ usage:
     Abc_Print( -2, "\t          binds the Gia network to Liberty cells and LEF macros\n" );
     Abc_Print( -2, "\t          a mapped network binds its real cells; an unmapped AIG\n" );
     Abc_Print( -2, "\t          binds every node to a virtual cell, so that it can be\n" );
-    Abc_Print( -2, "\t          placed and timed before \"&phys_map\"\n" );
+    Abc_Print( -2, "\t          placed and timed before \"&phys_map\"; the command fails\n" );
+    Abc_Print( -2, "\t          when a mapped cell is missing from the active corner\n" );
     Abc_Print( -2, "\t-c cell : Liberty cell that models the AIG nodes before mapping\n" );
     Abc_Print( -2, "\t          [default = smallest two-input combinational cell]\n" );
     Abc_Print( -2, "\t-v      : print detailed information [default = no]\n" );
@@ -1350,6 +1652,7 @@ usage:
 int Abc_CommandPhysSta( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
     Phys_StaPars_t Pars, Def;
+    char * pCornerName = NULL;
     int c, fVerbose = 0;
     Phys_StaSetDefault( &Def );
     Pars = Def;
@@ -1358,10 +1661,15 @@ int Abc_CommandPhysSta( Abc_Frame_t * pAbc, int argc, char ** argv )
     Pars.WireRes = Abc_FrameReadSignalRes();
     Pars.WireCap = Abc_FrameReadSignalCap();
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "T:s:l:r:c:mvh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "T:s:l:r:c:k:mvh" )) != EOF )
     {
         switch ( c )
         {
+        case 'k':
+            if ( globalUtilOptarg == NULL )
+                goto usage;
+            pCornerName = (char *)globalUtilOptarg;
+            break;
         case 'T':
             if ( globalUtilOptarg == NULL ) goto usage;
             Pars.Period = (float)atof( globalUtilOptarg );
@@ -1406,19 +1714,43 @@ int Abc_CommandPhysSta( Abc_Frame_t * pAbc, int argc, char ** argv )
         Abc_Print( -1, "There is no Gia network. Read one with \"&read\" first.\n" );
         return 1;
     }
+    if ( pCornerName != NULL )
+    {
+        Phys_Man_t * pMan = (Phys_Man_t *)pAbc->pPhysMan;
+        Phys_Lib_t * pLib = Abc_PhysFindCorner( pAbc, pCornerName );
+        if ( pLib == NULL )
+        {
+            Abc_Print( -1, "Cannot find the Liberty corner \"%s\".\n", pCornerName );
+            Abc_PhysPrintCorners( pAbc );
+            return 1;
+        }
+        if ( pLib != pMan->pLib )
+        {
+            if ( !Phys_ManSetLib( pMan, pLib ) )
+            {
+                Abc_Print( -1, "Cannot switch the timing library to corner \"%s\".\n", pCornerName );
+                return 1;
+            }
+            Abc_Print( 1, "Timing corner: \"%s\" (%d cells).\n",
+                       pLib->pCorner ? pLib->pCorner : "default", Vec_PtrSize(pLib->vCells) );
+        }
+        pAbc->pPhysLib = pLib;
+    }
     Pars.fVerbose = fVerbose;
     if ( !Phys_StaRun( (Phys_Man_t *)pAbc->pPhysMan, pAbc->pGia, &Pars ) )
         return 1;
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: &phys_sta [-T num] [-s num] [-l layer] [-r num] [-c num] [-mvh]\n" );
+    Abc_Print( -2, "usage: &phys_sta [-T num] [-s num] [-l layer] [-r num] [-c num] [-k corner] [-mvh]\n" );
     Abc_Print( -2, "\t          reports timing with Elmore wire delays extracted from the placement\n" );
     Abc_Print( -2, "\t-T num  : clock period in ps [default = longest path]\n" );
     Abc_Print( -2, "\t-s num  : input slew in ps [default = %.2f]\n", Def.InputSlew );
     Abc_Print( -2, "\t-l layer: routing layer for RC, or \"auto\" [default = auto]\n" );
     Abc_Print( -2, "\t-r num  : unit wire resistance in ohm/um [default = set_signal_res, else LEF]\n" );
     Abc_Print( -2, "\t-c num  : unit wire capacitance in pF/um [default = set_signal_cap, else LEF]\n" );
+    Abc_Print( -2, "\t-k corner: time the design with another Liberty corner [default = active];\n" );
+    Abc_Print( -2, "\t          the mapping library remains the one built by &phys_start\n" );
     Abc_Print( -2, "\t-m      : minimum spanning tree instead of the Steiner tree [default = Steiner]\n" );
     Abc_Print( -2, "\t-v      : print detailed information [default = no]\n" );
     Abc_Print( -2, "\t-h      : print the command usage\n" );

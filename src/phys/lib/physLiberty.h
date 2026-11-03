@@ -99,6 +99,19 @@ typedef struct Phys_Template_t_
 typedef struct Phys_Lib_t_
 {
     char *        pName;
+    char *        pCorner;     /* corner name ("read_liberty -k", or the
+                                  PVT name when -k is omitted)             */
+    /* PVT of the library, scanned from nom_process/nom_voltage/
+       nom_temperature and the default operating condition.  pProc is the
+       process word of the operating condition (tt, ss, ff); fPvt is set
+       when all three are known.  A corner read without "-k" is named
+       "<pProc>_<voltage>_<temperature>" and the corners are ordered by
+       these values. */
+    float         PvtProcess;
+    float         PvtVoltage;
+    float         PvtTemp;
+    char *        pProc;
+    int           fPvt;
     Phys_Units_t  Units;
     Vec_Ptr_t *   vCells;      /* Phys_LibCell_t *                        */
     Vec_Ptr_t *   vTemplates;  /* Phys_Template_t *                       */
@@ -111,6 +124,24 @@ typedef struct Phys_Lib_t_
 extern Phys_Lib_t *      Phys_LibertyRead( const char * pFileName, int fVerbose );
 extern void              Phys_LibFree( Phys_Lib_t ** pp );
 extern void              Phys_LibFinish( Phys_Lib_t * p );
+
+/* corners: one Phys_Lib_t holds the cells of one corner.  Phys_LibMerge
+   moves the cells of pSrc into pDst, so that several Liberty files of the
+   same corner (for example, several standard-cell families with distinct
+   cell names) can be read into one library.  Returns 1 on success and 0
+   when a cell name is already present in pDst; pSrc keeps its templates
+   and is released by the caller. */
+extern void              Phys_LibSetCorner( Phys_Lib_t * p, const char * pCorner );
+extern int               Phys_LibMerge( Phys_Lib_t * pDst, Phys_Lib_t * pSrc );
+
+/* PVT: the corner name derived from the values read by the parser when
+   "read_liberty" is called without "-k".  Phys_LibPvtName writes
+   "<process>_<voltage>_<temperature>", for example "tt_1.2_25", and
+   returns 0 when the file carries no complete PVT.  Phys_LibPvtRank
+   orders the process words: 0 = fast (ff), 1 = typical (tt), 2 = slow
+   (ss), 3 = PVT known but an unrecognized process, 4 = no PVT. */
+extern int               Phys_LibPvtName( Phys_Lib_t * p, char * pBuf, int nBuf );
+extern int               Phys_LibPvtRank( Phys_Lib_t * p );
 
 /* lookups */
 extern Phys_LibCell_t *  Phys_LibFindCell( Phys_Lib_t * p, const char * pName );
