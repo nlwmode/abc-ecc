@@ -55,6 +55,17 @@ typedef struct Phys_PlacePars_t_
     float IoPitch;      /* minimum IO pin pitch in um, 0 = no limit */
     int   fLegalize;    /* 1 = legalize into rows, 0 = keep the spread
                            placement, whose cells may overlap        */
+    int   nChoiceMode;  /* 0 = every alternative of a choice class is a
+                           cell of the placement (the choice-blind
+                           baseline), 1 = block coordinate descent over
+                           the selection ("-c"): only the selected
+                           alternative of every class is placed
+                           globally, and every alternative is evaluated
+                           at its class output anchor between the
+                           rounds                                   */
+    int   nChoiceRounds;/* selection rounds of the descent ("-r")     */
+    float ChoiceTol;    /* relative cost gain that makes a new
+                           alternative worth migrating to            */
     int   fVerbose;
 } Phys_PlacePars_t;
 

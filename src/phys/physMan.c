@@ -205,6 +205,7 @@ void Phys_ManStop( Phys_Man_t ** pp )
         return;
     p = *pp;
     *pp = NULL;
+    Phys_ChoiceFree( p );
     Phys_ManFreePins( p->vObjToPins );
     Phys_ManFreePins( p->vLitToPins );
     Vec_PtrFreeP( &p->vObjToPins );
@@ -273,6 +274,9 @@ void Phys_ManResize( Phys_Man_t * p, int nObjs )
 {
     if ( p == NULL )
         return;
+    /* the choice classes index the objects of the network they were
+       derived from; a rebind renumbers them, so the classes go with it */
+    Phys_ChoiceFree( p );
     Phys_ManFreePins( p->vObjToPins );
     Phys_ManFreePins( p->vLitToPins );
     Vec_PtrFreeP( &p->vObjToPins );

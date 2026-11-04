@@ -23,6 +23,7 @@
 ABC_NAMESPACE_HEADER_START
 
 typedef struct Phys_Cong_t_ Phys_Cong_t;
+typedef struct Phys_ChoiceClass_t_ Phys_ChoiceClass_t;
 
 typedef struct Phys_Man_t_
 {
@@ -86,6 +87,25 @@ typedef struct Phys_Man_t_
     float            Dbu;          /* LEF database units per micron        */
     float            InputSlew;    /* input slew used by the last STA run  */
     int              fTimed;
+    /* Choice classes of a network with sibling nodes ("&choice",
+       "&st; &dch").  A class is a sibling chain: functionally equivalent
+       cones ("alternatives") of which exactly one is the representative
+       of the netlist.  The private cone of an alternative (its MFFC) is
+       its subgraph; the nodes outside every cone are shared logic and
+       always active.  These arrays are rebuilt by Phys_ChoiceDerive and
+       only valid while the Gia object numbering is unchanged. */
+    Phys_ChoiceClass_t * pClasses; /* owned; freed by Phys_ChoiceFree    */
+    int              nClasses;
+    int              fHasChoices;  /* 1 = the arrays below are valid       */
+    Vec_Int_t *      vObjClass;    /* per object: class id, -1 = none      */
+    Vec_Int_t *      vObjAlt;      /* per object: alternative index, -1    */
+    Vec_Int_t *      vObjActive;   /* per object: 1 = in the netlist       */
+    Vec_Int_t *      vObjSiblLit;  /* per object i: literal of the next
+                                      class member, or -1                 */
+    Vec_Int_t *      vObjPhase;    /* per object: value on the all-zero
+                                      input pattern (the phase the choice
+                                      generators store); two members of a
+                                      class are equal up to this bit      */
 } Phys_Man_t;
 
 extern Phys_Man_t * Phys_ManStart( Phys_LefTech_t * pLef, Phys_Lib_t * pLib, int fVerbose );
@@ -132,6 +152,30 @@ extern int          Phys_ManLitFaninNum( Phys_Man_t * p, Gia_Man_t * pGia, int i
 extern int          Phys_ManLitFaninLit( Phys_Man_t * p, Gia_Man_t * pGia, int iLit, int k );
 /* literal of the instance that drives an arbitrary signal literal */
 extern int          Phys_ManDriverLit( Phys_Man_t * p, Gia_Man_t * pGia, int iLit );
+
+/* Choice classes.  The sibling lists of the Gia network are turned into
+   classes of alternatives with their private cones, and exactly one
+   alternative per class is marked active: the member the network uses (one
+   with a fanout outside the class), or the first member when none has one.
+   A selection replaces it and re-derives the active flags.
+   Phys_ChoiceResolveFanin is how the netlist view of a selection is read:
+   a fanin that refers to a non-selected member from outside its class is
+   redirected to the selected member, while a reference inside the member's
+   own cone is kept.  Phys_ChoiceFree forgets the classes, which is what
+   every rebind of the network does. */
+extern int          Phys_ChoiceDerive( Phys_Man_t * p, Gia_Man_t * pGia );
+extern void         Phys_ChoiceFree( Phys_Man_t * p );
+extern void         Phys_ChoiceActive( Phys_Man_t * p, Gia_Man_t * pGia );
+extern void         Phys_ChoiceSetActive( Phys_Man_t * p, Gia_Man_t * pGia, int iClass, int iAlt );
+extern int          Phys_ChoiceActiveNum( Phys_Man_t * p, int iClass );
+extern int          Phys_ChoiceClassSize( Phys_Man_t * p, int iClass );
+extern Vec_Int_t *  Phys_ChoiceClassAlts( Phys_Man_t * p, int iClass );
+extern Vec_Int_t *  Phys_ChoiceClassCone( Phys_Man_t * p, int iClass, int iAlt );
+extern int          Phys_ChoiceObjClass( Phys_Man_t * p, int iObj );
+extern int          Phys_ChoiceObjAlt( Phys_Man_t * p, int iObj );
+extern int          Phys_ChoiceObjActive( Phys_Man_t * p, int iObj );
+extern int          Phys_ChoiceResolveFanin( Phys_Man_t * p, int iSinkObj, int iLit );
+extern void         Phys_ChoicePrint( Phys_Man_t * p, int fVerbose );
 
 ABC_NAMESPACE_HEADER_END
 

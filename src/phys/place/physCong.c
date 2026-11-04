@@ -163,7 +163,7 @@ Phys_Cong_t * Phys_CongBuild( Phys_Man_t * pMan, Gia_Man_t * pGia, int nGrid )
     Phys_CongBox_t * pBoxes;
     float * pX, * pY, * pArea;
     float Dbu, X0, Y0, W, H, Target, MinDim, BinW, BinH;
-    int nObjs, nLits, nBins, i, k, bx, by, nNets = 0, nX, nY;
+    int nObjs, nLits, nBins, i, k, bx, by, nNets = 0, nX, nY, fChoices;
     if ( pMan == NULL || pGia == NULL || !pMan->fPlaced )
         return NULL;
     nObjs = Gia_ManObjNum( pGia );
@@ -193,19 +193,29 @@ Phys_Cong_t * Phys_CongBuild( Phys_Man_t * pMan, Gia_Man_t * pGia, int nGrid )
         pX[i] = x < 0 ? -1.0f : (float)x / Dbu;
         pY[i] = y < 0 ? -1.0f : (float)y / Dbu;
     }
-    /* the bounding box of every net, in the same model as the placer:
-       one net per driving literal, with POs as extra sinks */
+    /* The bounding box of every net, in the same model as the placer:
+       one net per driving literal, with POs as extra sinks.  The
+       congestion map describes the netlist of the current selection, so
+       an alternative that is not selected neither drives nor sinks a
+       net, and a fanin that refers to one is read from the selected
+       member -- the map then belongs to the cells the design would
+       actually contain. */
+    fChoices = pMan->fHasChoices;
     pBoxes = ABC_CALLOC( Phys_CongBox_t, nLits );
     for ( i = 2; i < nLits; i++ )
     {
         int nFans;
         if ( !Phys_ManLitIsCell( pMan, i ) )
             continue;
+        if ( fChoices && !Phys_ChoiceObjActive( pMan, Abc_Lit2Var(i) ) )
+            continue;
         nFans = Phys_ManLitFaninNum( pMan, pGia, i );
         for ( k = 0; k < nFans; k++ )
         {
             int d = Phys_ManLitFaninLit( pMan, pGia, i, k );
             int dx = 0, dy = 0;
+            if ( fChoices )
+                d = Phys_ChoiceResolveFanin( pMan, Abc_Lit2Var(i), d );
             if ( d <= 1 || d >= nLits || pX[i] < 0.0f || pY[i] < 0.0f )
                 continue;
             /* the sink end of the net is its input pin */
@@ -220,6 +230,8 @@ Phys_Cong_t * Phys_CongBuild( Phys_Man_t * pMan, Gia_Man_t * pGia, int nGrid )
         if ( !Gia_ObjIsPo(pGia, pObj) )
             continue;
         d = Phys_ManDriverLit( pMan, pGia, Gia_ObjFaninLit0(pObj, i) );
+        if ( fChoices )
+            d = Phys_ChoiceResolveFanin( pMan, i, d );
         if ( d > 1 && d < nLits && pX[2*i] >= 0.0f )
             Phys_CongNetAdd( pBoxes, pX[2*i], pY[2*i], d );
     }
@@ -294,6 +306,8 @@ Phys_Cong_t * Phys_CongBuild( Phys_Man_t * pMan, Gia_Man_t * pGia, int nGrid )
         float Cx0, Cy0, Cx1, Cy1;
         int bx0, bx1, by0, by1;
         if ( (pCell = Phys_ManLitCell( pMan, i )) == NULL || pX[i] < 0.0f )
+            continue;
+        if ( fChoices && !Phys_ChoiceObjActive( pMan, Abc_Lit2Var(i) ) )
             continue;
         Phys_PlaceCellSizeCell( pMan, pCell, &w, &h );
         if ( w <= 0 || h <= 0 )

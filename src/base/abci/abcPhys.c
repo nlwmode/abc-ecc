@@ -1533,7 +1533,7 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
     Phys_PlaceSetDefault( &Def );
     Pars = Def;
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "u:a:i:s:o:g:p:e:lvh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "u:a:i:s:o:g:p:e:cr:t:lvh" )) != EOF )
     {
         switch ( c )
         {
@@ -1584,6 +1584,29 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
                 goto usage;
             }
             break;
+        case 'c':
+            /* a toggle: every alternative of a class is a real cell of the
+               placement unless the block coordinate descent is asked for */
+            Pars.nChoiceMode ^= 1;
+            break;
+        case 'r':
+            if ( globalUtilOptarg == NULL ) goto usage;
+            Pars.nChoiceRounds = atoi( globalUtilOptarg );
+            if ( Pars.nChoiceRounds < 0 )
+            {
+                Abc_Print( -1, "The number of selection rounds should not be negative.\n" );
+                goto usage;
+            }
+            break;
+        case 't':
+            if ( globalUtilOptarg == NULL ) goto usage;
+            Pars.ChoiceTol = (float)atof( globalUtilOptarg );
+            if ( Pars.ChoiceTol < 0.0f )
+            {
+                Abc_Print( -1, "The choice tolerance should not be negative.\n" );
+                goto usage;
+            }
+            break;
         case 'l':
             Pars.fLegalize = 1;
             break;
@@ -1614,7 +1637,7 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: &phys_place [-u num] [-a num] [-i num] [-s num] [-o num] [-g num] [-p num] [-e num] [-lvh]\n" );
+    Abc_Print( -2, "usage: &phys_place [-u num] [-a num] [-i num] [-s num] [-o num] [-g num] [-p num] [-e num] [-cr num] [-t num] [-lvh]\n" );
     Abc_Print( -2, "\t          places the bound Gia netlist (virtual AIG cells before\n" );
     Abc_Print( -2, "\t          mapping, mapped standard cells afterwards)\n" );
     Abc_Print( -2, "\t-u num  : target core utilization, 0 < num <= 1 [default = %.2f]\n", Def.Util );
@@ -1630,6 +1653,18 @@ usage:
     Abc_Print( -2, "\t          the object order (the control for 1 and 2)\n" );
     Abc_Print( -2, "\t-e num  : minimum IO pin pitch in um; a core too small to host the\n" );
     Abc_Print( -2, "\t          terminals at this pitch is enlarged [default = %.2f, no limit]\n", Def.IoPitch );
+    Abc_Print( -2, "\t-c      : place by block coordinate descent over the choice\n" );
+    Abc_Print( -2, "\t          selection instead of placing the choice graph as it is.\n"
+                    "\t          By default every alternative of a class is a real\n"
+                    "\t          cell of the placement (the choice-blind baseline);\n"
+                    "\t          with -c only the selected alternative of every class\n"
+                    "\t          enters the global placement, the alternatives are\n"
+                    "\t          evaluated at the output anchor of their class between\n"
+                    "\t          the rounds, and the winner is placed again\n"
+                    "\t          [default = no]\n" );
+    Abc_Print( -2, "\t-r num  : selection rounds of -c [default = %d]\n", Def.nChoiceRounds );
+    Abc_Print( -2, "\t-t num  : relative cost gain that makes a new alternative worth\n" );
+    Abc_Print( -2, "\t          migrating to [default = %.3f]\n", Def.ChoiceTol );
     Abc_Print( -2, "\t-l      : legalize the placement into standard-cell rows; by\n" );
     Abc_Print( -2, "\t          default the spread placement is kept, so the cells may\n" );
     Abc_Print( -2, "\t          overlap and are not aligned to sites [default = no]\n" );
@@ -1661,7 +1696,7 @@ int Abc_CommandPhysSta( Abc_Frame_t * pAbc, int argc, char ** argv )
     Pars.WireRes = Abc_FrameReadSignalRes();
     Pars.WireCap = Abc_FrameReadSignalCap();
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "T:s:l:r:c:k:mvh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "T:s:l:r:c:Ck:mvh" )) != EOF )
     {
         switch ( c )
         {
@@ -1689,6 +1724,11 @@ int Abc_CommandPhysSta( Abc_Frame_t * pAbc, int argc, char ** argv )
         case 'c':
             if ( globalUtilOptarg == NULL ) goto usage;
             Pars.WireCap = (float)atof( globalUtilOptarg );
+            break;
+        case 'C':
+            /* a toggle: every alternative is timed unless the selected
+               one is asked for */
+            Pars.nChoiceMode ^= 1;
             break;
         case 'm':
             Pars.fSteiner ^= 1;
@@ -1742,13 +1782,17 @@ int Abc_CommandPhysSta( Abc_Frame_t * pAbc, int argc, char ** argv )
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: &phys_sta [-T num] [-s num] [-l layer] [-r num] [-c num] [-k corner] [-mvh]\n" );
+    Abc_Print( -2, "usage: &phys_sta [-T num] [-s num] [-l layer] [-r num] [-c num] [-C] [-k corner] [-mvh]\n" );
     Abc_Print( -2, "\t          reports timing with Elmore wire delays extracted from the placement\n" );
     Abc_Print( -2, "\t-T num  : clock period in ps [default = longest path]\n" );
     Abc_Print( -2, "\t-s num  : input slew in ps [default = %.2f]\n", Def.InputSlew );
     Abc_Print( -2, "\t-l layer: routing layer for RC, or \"auto\" [default = auto]\n" );
     Abc_Print( -2, "\t-r num  : unit wire resistance in ohm/um [default = set_signal_res, else LEF]\n" );
     Abc_Print( -2, "\t-c num  : unit wire capacitance in pF/um [default = set_signal_cap, else LEF]\n" );
+    Abc_Print( -2, "\t-C      : time only the selected alternative of every choice\n" );
+    Abc_Print( -2, "\t          class and read the fanouts of the class from it.  By\n" );
+    Abc_Print( -2, "\t          default every alternative is timed as an ordinary cell,\n" );
+    Abc_Print( -2, "\t          which is the choice-blind view [default = no]\n" );
     Abc_Print( -2, "\t-k corner: time the design with another Liberty corner [default = active];\n" );
     Abc_Print( -2, "\t          the mapping library remains the one built by &phys_start\n" );
     Abc_Print( -2, "\t-m      : minimum spanning tree instead of the Steiner tree [default = Steiner]\n" );

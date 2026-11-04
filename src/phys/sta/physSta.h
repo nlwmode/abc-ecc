@@ -33,6 +33,11 @@ typedef struct Phys_StaPars_t_
     float WireRes;     /* ohm/um; <= 0.0 uses the LEF layer value      */
     float WireCap;     /* pF/um; <= 0.0 uses the LEF/default value     */
     int   fSteiner;    /* 1 = Steiner wire tree, 0 = spanning tree     */
+    int   nChoiceMode; /* 0 = every alternative of a choice class is a
+                          cell of the netlist (the choice-blind
+                          baseline), 1 = only the selected alternative
+                          is timed and the fanouts of the class are read
+                          from it ("-C")                             */
     int   fVerbose;
 } Phys_StaPars_t;
 

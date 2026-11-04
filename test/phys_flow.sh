@@ -208,9 +208,19 @@ for d in "${designs[@]}"; do
             mc = $6; ov = $7; gsub(",", "", mc); gsub(",", "", ov); next
         }
         /^Placement: [0-9]+ cells placed/ {
-            # "..., wirelength 17560.1 um, cell area 2698.9 um^2."
-            c = $2; u = $9; r = $10; o = $16; w = $18; a = $22
-            gsub(",", "", u); gsub(",", "", o)
+            # "Placement: 174 cells placed, legalization skipped, utilization
+            #  0.56, 15/15 rows used, max row occupancy 1.33, wirelength
+            #  803.3 um, cell area 237.2 um^2."
+            # the legalization segment is one word ("legalization skipped")
+            # or two ("N overlaps remain"), so the values are read from the
+            # comma-separated segments, where their positions are fixed
+            split($0, seg, ", ")
+            split(seg[1], f, " "); c = f[2]
+            split(seg[3], f, " "); u = f[2]
+            split(seg[4], f, " "); r = f[1]
+            split(seg[5], f, " "); o = f[4]
+            split(seg[6], f, " "); w = f[2]
+            split(seg[7], f, " "); a = f[3]
             split(r, a2, "/")
             iter++
             pc = c; pu = u; pr = a2[1]; pt = a2[2]; po = o; pw = w

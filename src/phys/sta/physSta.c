@@ -55,6 +55,9 @@ void Phys_StaSetDefault( Phys_StaPars_t * p )
     p->WireRes   = 0.0f;
     p->WireCap   = 0.0f;
     p->fSteiner  = 1;
+    /* every alternative of a choice class is timed by default, which is the
+       choice-blind view; "-C" times only the selected one */
+    p->nChoiceMode = 0;
     p->fVerbose  = 0;
 }
 
@@ -240,6 +243,20 @@ static void Phys_StaNetAdd( Vec_Ptr_t * vSinkObj, Vec_Ptr_t * vSinkPin,
     Vec_IntPush( vPin, iPin );
 }
 
+/* The netlist view of one cell under the choice selection.  A cell that
+   is not the selected alternative of its class is not part of the
+   netlist, so it neither drives nor loads a net, and a fanin that refers
+   to such a member is read from the selected one.  With fChoices off
+   (the choice-blind baseline) every instance is timed as it stands. */
+static int Phys_StaActive( Phys_Man_t * p, int fChoices, int iLit )
+{
+    return !fChoices || Phys_ChoiceObjActive( p, Abc_Lit2Var(iLit) );
+}
+static int Phys_StaFanin( Phys_Man_t * p, int fChoices, int iSinkObj, int iLit )
+{
+    return fChoices ? Phys_ChoiceResolveFanin( p, iSinkObj, iLit ) : iLit;
+}
+
 
 /**Function*************************************************************
 
@@ -274,6 +291,7 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
     int iWorstNet = -1, nWorstSinks = 0;
     int nSteinerTotal = 0, nSteinerNet = 0, nSteinerNets = 0;
     int nSteinerRun = 0, nSteinerRej = 0;
+    int fChoices;
     if ( p == NULL || pGia == NULL || pPars == NULL )
         return 0;
     if ( pPars->Period < 0.0f || pPars->InputSlew < 0.0f ||
@@ -297,6 +315,15 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
     Dbu = (float)(p->pLef ? p->pLef->Units.Dbu : 1000);
     if ( Dbu <= 0.0f )
         Dbu = 1000.0f;
+    /* the choice classes are derived from the network the timing analysis
+       is run on, so that a selection made by the placement is seen here;
+       mode 0 times every alternative as an ordinary cell */
+    if ( !p->fHasChoices )
+        Phys_ChoiceDerive( p, pGia );
+    fChoices = p->fHasChoices && pPars->nChoiceMode != 0;
+    if ( fChoices && pPars->fVerbose )
+        fprintf( stdout, "STA: timing the selected alternative of %d choice class(es).\n",
+                 p->nClasses );
     RcR = RcC = 0.0f;
     if ( p->pLef != NULL )
     {
@@ -376,12 +403,19 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
         nFans = Phys_ManLitFaninNum( p, pGia, i );
         if ( nPins > nFans )
             nPins = nFans;
+        /* the pin slots stay allocated for every cell instance, so the
+           arrays keep their literal indexing; an inactive alternative is
+           simply not a sink of any net */
         Vec_IntWriteEntry( vPinOff, i, Vec_FltSize(vPinDelay) );
         for ( k = 0; k < nPins; k++ )
             Vec_FltPush( vPinDelay, 0.0f ), Vec_FltPush( vPinGateDelay, 0.0f );
+        if ( !Phys_StaActive( p, fChoices, i ) )
+            continue;
         for ( k = 0; k < nPins; k++ )
         {
-            d = Phys_ManLitFaninLit( p, pGia, i, k );
+            d = Phys_StaFanin( p, fChoices, Abc_Lit2Var(i), Phys_ManLitFaninLit( p, pGia, i, k ) );
+            if ( d > 1 && d < nLits && !Phys_StaActive( p, fChoices, d ) )
+                continue;
             if ( d > 1 && d < nLits )
                 Phys_StaNetAdd( vSinkObj, vSinkPin, d, i, k, nLits );
         }
@@ -392,7 +426,10 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
         int d;
         if ( !Gia_ObjIsPo(pGia, pObj) )
             continue;
+        /* the output reads the class, and the selected member drives it
+           whatever member the AIG edge was originally connected to */
         d = Phys_ManDriverLit( p, pGia, Gia_ObjFaninLit0p(pGia, pObj) );
+        d = Phys_StaFanin( p, fChoices, i, d );
         if ( d > 1 && d < nLits )
             Phys_StaNetAdd( vSinkObj, vSinkPin, d, 2*i, -1, nLits );
     }
@@ -499,6 +536,12 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
             }
             continue;
         }
+        /* an alternative that is not selected is not part of the netlist;
+           its arrival and slew stay at the initial value and no arc is
+           timed, which is what makes the choice-blind and the selected
+           views differ only in the cells that are counted */
+        if ( !Phys_StaActive( p, fChoices, i ) )
+            continue;
         nCells++;
         {
             Phys_LibPin_t * pOut = Phys_StaOutPin( pCell );
@@ -511,7 +554,8 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
                 nFans = Vec_PtrSize(vPins);
             for ( k = 0; k < nFans; k++ )
             {
-                int d = Phys_ManLitFaninLit( p, pGia, i, k );
+                int d = Phys_StaFanin( p, fChoices, Abc_Lit2Var(i),
+                                       Phys_ManLitFaninLit( p, pGia, i, k ) );
                 Phys_LibPin_t * pInPin = vPins != NULL && k < Vec_PtrSize(vPins) ?
                                         (Phys_LibPin_t *)Vec_PtrEntry(vPins, k) : NULL;
                 Phys_TimingArc_t * pArc;
@@ -602,7 +646,8 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
     {
         Gia_Obj_t * pObj = Gia_ManObj( pGia, i );
         int l0 = 2 * i, l1 = l0 + 1;
-        int f0 = Phys_ManLitIsCell( p, l0 ), f1 = Phys_ManLitIsCell( p, l1 );
+        int f0 = Phys_ManLitIsCell( p, l0 ) && Phys_StaActive( p, fChoices, l0 );
+        int f1 = Phys_ManLitIsCell( p, l1 ) && Phys_StaActive( p, fChoices, l1 );
         float r = 0.0f, f = 0.0f, sR = pPars->InputSlew, sF = pPars->InputSlew;
         float cap = 0.0f, dly = 0.0f, len = 0.0f;
         if ( f0 )
@@ -717,6 +762,7 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
             if ( !Gia_ObjIsPo(pGia, pObj) )
                 continue;
             d = Phys_ManDriverLit( p, pGia, Gia_ObjFaninLit0p(pGia, pObj) );
+            d = Phys_StaFanin( p, fChoices, i, d );
             Vec_FltWriteEntry( vReq, 2*i, PeriodUsed );
             if ( d > 1 && d < nLits && Vec_FltEntry(vReq, d) > PeriodUsed - Vec_FltEntry(vInWire, 2*i) )
                 Vec_FltWriteEntry( vReq, d, PeriodUsed - Vec_FltEntry(vInWire, 2*i) );
@@ -729,6 +775,8 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
             int nFans, off;
             if ( pCell == NULL || !(Req < 1e29f) )
                 continue;
+            if ( !Phys_StaActive( p, fChoices, i ) )
+                continue;
             off = Vec_IntEntry( vPinOff, i );
             nFans = Phys_ManLitFaninNum( p, pGia, i );
             vPins = Phys_ManLitPins( p, i );
@@ -736,7 +784,8 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
                 nFans = Vec_PtrSize(vPins);
             for ( k = 0; k < nFans; k++ )
             {
-                int d = Phys_ManLitFaninLit( p, pGia, i, k );
+                int d = Phys_StaFanin( p, fChoices, Abc_Lit2Var(i),
+                                       Phys_ManLitFaninLit( p, pGia, i, k ) );
                 float Need = Req;
                 if ( d <= 1 || d >= nLits || off < 0 || off + k >= Vec_FltSize(vPinDelay) )
                     continue;
@@ -840,8 +889,9 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
         p->fTimed       = 1;
         if ( pPars->fVerbose )
         {
-            fprintf( stdout, "STA: %d cells, %d input pins, %d nets, %d sinks, %d endpoints.\n",
-                     nCells, nIns, nNets, nSinks, nEndpoints );
+            fprintf( stdout, "STA: %d cells%s, %d input pins, %d nets, %d sinks, %d endpoints.\n",
+                     nCells, fChoices ? " (selected alternatives only)" : "",
+                     nIns, nNets, nSinks, nEndpoints );
             fprintf( stdout, "STA: wire %.2f um (%s, %d Steiner points on %d nets), %.3f pF, "
                              "R=%.3f ohm/um, C=%.6f pF/um.\n",
                      TotalWire, pPars->fSteiner ? "Steiner tree" : "spanning tree",

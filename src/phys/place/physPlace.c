@@ -35,6 +35,15 @@ typedef struct Phys_PNode_t_
     int   Lit;       /* output literal of the cell, or of the PI/PO */
     int   Kind;      /* 0 = cell, 1 = primary input, 2 = output     */
     int   Fixed;     /* PIs and POs are fixed                      */
+    int   fActive;   /* 1 = a cell of the netlist under the current
+                        choice selection.  This is the representative
+                        subgraph: its area, its wires and its timing are
+                        what the flow reports, in both choice modes */
+    int   fPlace;    /* 1 = a movable cell of the global placement.  In
+                        the selection mode this is the same set as
+                        fActive; the choice-blind baseline places every
+                        alternative, so it includes the candidates that
+                        the reported netlist does not contain */
     int   W, H;      /* size in DBU                                */
     float X, Y;      /* center in DBU                              */
     /* pin offsets from the center, in DBU, from the LEF macro.  A wire
@@ -95,6 +104,12 @@ void Phys_PlaceSetDefault( Phys_PlacePars_t * p )
     p->IoPitch      = 0.0f;
     /* the solver output is kept by default; -l legalizes it into rows */
     p->fLegalize    = 0;
+    /* a choice network is placed choice-blind by default -- every
+       alternative of a class is a real cell -- and "-c" turns on the block
+       coordinate descent over the selection */
+    p->nChoiceMode  = 0;
+    p->nChoiceRounds= 2;
+    p->ChoiceTol    = 0.01f;
     p->fVerbose     = 0;
 }
 
@@ -403,13 +418,17 @@ static double Phys_PlaceHpwl( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx,
         if ( vList == NULL )
             continue;
         iDriver = Vec_IntEntry( vNode2Idx, q );
-        if ( iDriver < 0 )
+        if ( iDriver < 0 || !pNodes[iDriver].fActive )
             continue;
         vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, q );
         xMin = xMax = Phys_PlacePinX( pNodes + iDriver, PHYS_PLACE_PIN_OUT );
         yMin = yMax = Phys_PlacePinY( pNodes + iDriver, PHYS_PLACE_PIN_OUT );
         Vec_IntForEachEntry( vList, Entry, k )
         {
+            /* a sink of a choice class that is not selected is not a sink
+               of the netlist, so it does not extend the bounding box */
+            if ( !pNodes[Entry].fActive )
+                continue;
             iPin = Vec_IntEntry( vPins, k );
             xMin = Abc_MinFloat( xMin, Phys_PlacePinX(pNodes + Entry, iPin) );
             xMax = Abc_MaxFloat( xMax, Phys_PlacePinX(pNodes + Entry, iPin) );
@@ -436,7 +455,7 @@ static void Phys_PlaceHpwlInternal( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx
         if ( vList == NULL )
             continue;
         iDriver = Vec_IntEntry( vNode2Idx, q );
-        if ( iDriver < 0 )
+        if ( iDriver < 0 || !pNodes[iDriver].fActive )
             continue;
         fDriver = Vec_IntEntry( vFreeIdx, iDriver );
         if ( fDriver < 0 )
@@ -446,6 +465,8 @@ static void Phys_PlaceHpwlInternal( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx
         yMin = yMax = Phys_PlacePinY( pNodes + iDriver, PHYS_PLACE_PIN_OUT );
         Vec_IntForEachEntry( vList, Entry, k )
         {
+            if ( !pNodes[Entry].fActive )
+                continue;
             fSink = Vec_IntEntry( vFreeIdx, Entry );
             if ( fSink < 0 )
             {
@@ -744,6 +765,16 @@ static float Phys_PlaceMaxRowOcc( Phys_PNode_t * pNodes, Vec_Int_t * vFree,
         MaxOcc = Abc_MaxFloat( MaxOcc, pUsed[r] / W );
     ABC_FREE( pUsed );
     return MaxOcc;
+}
+
+/* number of placed nodes that belong to the representative subgraph */
+static int Phys_PlaceActiveCells( Phys_PNode_t * pNodes, int nNodes )
+{
+    int i, n = 0;
+    for ( i = 0; i < nNodes; i++ )
+        if ( pNodes[i].Kind == 0 && pNodes[i].fActive )
+            n++;
+    return n;
 }
 
 /**Function*************************************************************
@@ -1820,26 +1851,436 @@ static void Phys_PlaceAssignPins( Phys_PNode_t * pNodes, int nNodes, Vec_Int_t *
 
 /**Function*************************************************************
 
-  Synopsis    [Runs analytical placement]
+  Synopsis    [Output anchor of every choice class]
 
-  Description [Returns 1 on success and 0 on failure.]
+  Description [The alternatives of one class share their inputs and their
+               output, so the boundary they can be compared in is the
+               placement of that shared output.  The selected member is
+               placed there; the anchor is the mean of its placed cells,
+               stored on the member literals so that a candidate can be
+               seeded around it and the next round can find it again.]
 
   SideEffects []
 
 ***********************************************************************/
-int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
+static void Phys_PlaceClassAnchors( Phys_Man_t * p, Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx,
+                                    Vec_Int_t * vCX, Vec_Int_t * vCY, int nLits )
+{
+    int c, a, k;
+    for ( c = 0; c < p->nClasses; c++ )
+    {
+        Vec_Int_t * vAlts = Phys_ChoiceClassAlts( p, c );
+        Vec_Int_t * vCone = Phys_ChoiceClassCone( p, c, Phys_ChoiceActiveNum( p, c ) );
+        float X = 0.0f, Y = 0.0f;
+        int fFound = 0;
+        if ( vCone == NULL )
+            continue;
+        Vec_IntForEachEntry( vCone, k, a )
+        {
+            int iNode = 2 * k < nLits ? Vec_IntEntry( vNode2Idx, 2 * k ) : -1;
+            if ( iNode >= 0 && pNodes[iNode].Kind == 0 )
+                X += pNodes[iNode].X, Y += pNodes[iNode].Y, fFound++;
+        }
+        if ( fFound == 0 )
+            continue;
+        X /= (float)fFound;
+        Y /= (float)fFound;
+        Vec_IntForEachEntry( vAlts, k, a )
+        {
+            Vec_IntWriteEntry( vCX, k, (int)(X + 0.5f) );
+            Vec_IntWriteEntry( vCY, k, (int)(Y + 0.5f) );
+        }
+    }
+}
+
+/* the anchor of one class, from the literals stored by the function above */
+static int Phys_PlaceClassAnchor( Phys_Man_t * p, Vec_Int_t * vCX, Vec_Int_t * vCY, int iClass, float * pX, float * pY )
+{
+    Vec_Int_t * vAlts = Phys_ChoiceClassAlts( p, iClass );
+    int k = Vec_IntSize( vAlts ) > 0 ? Vec_IntEntry( vAlts, 0 ) : -1;
+    if ( k < 0 || k >= Vec_IntSize(vCX) )
+        return 0;
+    *pX = (float)Vec_IntEntry( vCX, k );
+    *pY = (float)Vec_IntEntry( vCY, k );
+    return 1;
+}
+
+/* seeds a candidate alternative around its class anchor: every cell of the
+   cone is laid out in a grid around the anchor, so the local placement
+   starts from a configuration that spans the alternative instead of from
+   a single point */
+static void Phys_PlaceSeedAlt( Phys_Man_t * p, Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx,
+                               Vec_Int_t * vCX, Vec_Int_t * vCY,
+                               int iClass, int iAlt, float AnchorX, float AnchorY )
+{
+    Vec_Int_t * vCone = Phys_ChoiceClassCone( p, iClass, iAlt );
+    Vec_Int_t * vAlts = Phys_ChoiceClassAlts( p, iClass );
+    int Lit = Vec_IntEntry( vAlts, iAlt );
+    int n = Vec_IntSize( vCone ), k, iObj, nCols;
+    if ( vCone == NULL || n == 0 )
+        return;
+    nCols = (int)ceil( sqrt( (double)n ) );
+    if ( nCols < 1 )
+        nCols = 1;
+    /* the member drives the class output, so it sits on the anchor */
+    Vec_IntWriteEntry( vCX, 2 * Abc_Lit2Var(Lit), (int)(AnchorX + 0.5f) );
+    Vec_IntWriteEntry( vCY, 2 * Abc_Lit2Var(Lit), (int)(AnchorY + 0.5f) );
+    Vec_IntForEachEntry( vCone, iObj, k )
+    {
+        int iNode = 2 * iObj < Vec_IntSize(vNode2Idx) ? Vec_IntEntry( vNode2Idx, 2 * iObj ) : -1;
+        int col, row;
+        if ( iNode < 0 || pNodes[iNode].Kind != 0 )
+            continue;
+        col = k % nCols;
+        row = k / nCols;
+        pNodes[iNode].X = AnchorX + (float)(col - (nCols - 1) / 2) * (float)p->SiteW;
+        pNodes[iNode].Y = AnchorY + (float)(row - ((n - 1) / nCols) / 2) * (float)p->SiteH;
+    }
+}
+
+/* the nets a cone takes part in: the ones its cells drive and the ones its
+   cells are sinks of; every other net is untouched by the selection */
+static void Phys_PlaceConeNets( Phys_Man_t * p, Gia_Man_t * pGia, Vec_Int_t * vCone,
+                                Vec_Ptr_t * vSinks, int nLits, Vec_Int_t * vNets )
+{
+    Vec_Int_t * vMark = Vec_IntStart( nLits );
+    int a, k, iObj, iLit;
+    Vec_IntClear( vNets );
+    Vec_IntForEachEntry( vCone, iObj, a )
+    {
+        if ( 2 * iObj >= nLits || !Phys_ManLitIsCell(p, 2 * iObj) )
+            continue;
+        iLit = 2 * iObj;
+        if ( Vec_PtrEntry(vSinks, iLit) != NULL && !Vec_IntEntry(vMark, iLit) )
+            Vec_IntWriteEntry( vMark, iLit, 1 ), Vec_IntPush( vNets, iLit );
+        for ( k = 0; k < Phys_ManLitFaninNum(p, pGia, iLit); k++ )
+        {
+            int d = Phys_ChoiceResolveFanin( p, iObj, Phys_ManLitFaninLit(p, pGia, iLit, k) );
+            if ( d > 1 && d < nLits && Vec_PtrEntry(vSinks, d) != NULL && !Vec_IntEntry(vMark, d) )
+                Vec_IntWriteEntry( vMark, d, 1 ), Vec_IntPush( vNets, d );
+        }
+    }
+    Vec_IntFree( vMark );
+}
+
+static double Phys_PlaceHpwlNet( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx, Vec_Ptr_t * vSinks,
+                                 Vec_Ptr_t * vSinkPin, int nLits, int d )
+{
+    Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, d );
+    Vec_Int_t * vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, d );
+    int iDriver = Vec_IntEntry( vNode2Idx, d ), k, Entry, iPin;
+    float xMin, xMax, yMin, yMax;
+    if ( vList == NULL || iDriver < 0 || !pNodes[iDriver].fActive )
+        return 0.0;
+    xMin = xMax = Phys_PlacePinX( pNodes + iDriver, PHYS_PLACE_PIN_OUT );
+    yMin = yMax = Phys_PlacePinY( pNodes + iDriver, PHYS_PLACE_PIN_OUT );
+    Vec_IntForEachEntry( vList, Entry, k )
+    {
+        if ( !pNodes[Entry].fActive )
+            continue;
+        iPin = Vec_IntEntry( vPins, k );
+        xMin = Abc_MinFloat( xMin, Phys_PlacePinX(pNodes + Entry, iPin) );
+        xMax = Abc_MaxFloat( xMax, Phys_PlacePinX(pNodes + Entry, iPin) );
+        yMin = Abc_MinFloat( yMin, Phys_PlacePinY(pNodes + Entry, iPin) );
+        yMax = Abc_MaxFloat( yMax, Phys_PlacePinY(pNodes + Entry, iPin) );
+    }
+    return (double)(xMax - xMin) + (double)(yMax - yMin);
+}
+
+/**Function*************************************************************
+
+  Synopsis    [Evaluates one alternative of a choice class]
+
+  Description [Places the cells of the alternative's cone at the class
+               anchor with everything outside the cone fixed, and returns
+               the wirelength of the nets the cone takes part in.  The
+               solve is the same clique model the global placement uses,
+               restricted to the incident nets, so the local optimum is
+               consistent with the global cost; the wirelength is then
+               measured exactly over those nets, with the pins of the
+               fixed ends at their shared positions.
+
+               The caller has already made the alternative the active
+               one, so the fanout references of the class resolve to it.]
+
+  SideEffects []
+
+***********************************************************************/
+static double Phys_PlaceEvalAlt( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PNode_t * pNodes,
+                                 Vec_Int_t * vNode2Idx, Vec_Int_t * vCX, Vec_Int_t * vCY,
+                                 Vec_Ptr_t * vSinks, Vec_Ptr_t * vSinkPin,
+                                 int nLits, int iClass, int iAlt, int nIterCG )
+{
+    Vec_Int_t * vCone = Phys_ChoiceClassCone( p, iClass, iAlt );
+    Vec_Int_t * vNets = Vec_IntAlloc( 16 );
+    Vec_Int_t * vLoc  = Vec_IntStartFull( Vec_IntSize(vNode2Idx) );
+    Vec_Int_t * vEI, * vEJ;
+    Vec_Flt_t * vEW = NULL, * vDiag = NULL, * vBx = NULL, * vBy = NULL, * vRefX = NULL, * vRefY = NULL;
+    Vec_Flt_t * vSolX = NULL, * vSolY = NULL;
+    double Cost = 0.0;
+    float SumDiag = 0.0f, Anchor, AnchorX = 0.0f, AnchorY = 0.0f;
+    int n = Vec_IntSize( vCone ), a, k, q, qq, iObj, nFreeLocal = 0;
+    if ( vCone == NULL || n == 0 )
+    {
+        Vec_IntFree( vNets ); Vec_IntFree( vLoc );
+        return 0.0;
+    }
+    if ( !Phys_PlaceClassAnchor( p, vCX, vCY, iClass, &AnchorX, &AnchorY ) )
+        AnchorX = pNodes[Vec_IntEntry(vNode2Idx, 2 * Vec_IntEntry(vCone, 0))].X,
+        AnchorY = pNodes[Vec_IntEntry(vNode2Idx, 2 * Vec_IntEntry(vCone, 0))].Y;
+    Phys_PlaceSeedAlt( p, pNodes, vNode2Idx, vCX, vCY, iClass, iAlt, AnchorX, AnchorY );
+    /* the cone cells are the free nodes of the local solve */
+    Vec_IntForEachEntry( vCone, iObj, a )
+    {
+        int iNode = 2 * iObj < nLits ? Vec_IntEntry( vNode2Idx, 2 * iObj ) : -1;
+        if ( iNode >= 0 && pNodes[iNode].Kind == 0 )
+            Vec_IntWriteEntry( vLoc, iNode, nFreeLocal++ );
+    }
+    if ( nFreeLocal == 0 )
+    {
+        Vec_IntFree( vNets ); Vec_IntFree( vLoc );
+        return 0.0;
+    }
+    vEI   = Vec_IntAlloc( 4 * nFreeLocal );
+    vEJ   = Vec_IntAlloc( 4 * nFreeLocal );
+    vEW   = Vec_FltAlloc( 4 * nFreeLocal );
+    vDiag = Vec_FltStart( nFreeLocal );
+    vBx   = Vec_FltStart( nFreeLocal );
+    vBy   = Vec_FltStart( nFreeLocal );
+    vRefX = Vec_FltStart( nFreeLocal );
+    vRefY = Vec_FltStart( nFreeLocal );
+    vSolX = Vec_FltStart( nFreeLocal );
+    vSolY = Vec_FltStart( nFreeLocal );
+    Phys_PlaceConeNets( p, pGia, vCone, vSinks, nLits, vNets );
+    Vec_IntForEachEntry( vNets, q, qq )
+    {
+        Vec_Int_t * vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
+        Vec_Int_t * vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, q );
+        int iDriver = Vec_IntEntry( vNode2Idx, q );
+        int nPins = 1 + Vec_IntSize( vList ), ia, ib;
+        float w;
+        if ( iDriver < 0 )
+            continue;
+        w = 1.0f / (float)nPins;
+        /* pin a of the net is the driver at index -1, the sinks follow */
+        for ( ia = -1; ia < Vec_IntSize(vList); ia++ )
+        {
+            int nA = ia < 0 ? iDriver : Vec_IntEntry( vList, ia );
+            int fa = Vec_IntEntry( vLoc, nA );
+            int pA = ia < 0 ? PHYS_PLACE_PIN_OUT : Vec_IntEntry( vPins, ia );
+            if ( ia >= 0 && !pNodes[nA].fActive )
+                continue;
+            for ( ib = ia + 1; ib < Vec_IntSize(vList); ib++ )
+            {
+                int nB = Vec_IntEntry( vList, ib );
+                int fb = Vec_IntEntry( vLoc, nB );
+                int pB = Vec_IntEntry( vPins, ib );
+                float dx, dy;
+                if ( !pNodes[nB].fActive )
+                    continue;
+                dx = Phys_PlacePinX(pNodes + nA, pA) - Phys_PlacePinX(pNodes + nB, pB);
+                dy = Phys_PlacePinY(pNodes + nA, pA) - Phys_PlacePinY(pNodes + nB, pB);
+                if ( fa >= 0 && fb >= 0 )
+                {
+                    Vec_IntPush( vEI, fa ); Vec_IntPush( vEJ, fb ); Vec_FltPush( vEW, w );
+                    Vec_FltAddToEntry( vDiag, fa, w );
+                    Vec_FltAddToEntry( vDiag, fb, w );
+                    Vec_FltAddToEntry( vBx, fa, -w * dx );
+                    Vec_FltAddToEntry( vBx, fb,  w * dx );
+                    Vec_FltAddToEntry( vBy, fa, -w * dy );
+                    Vec_FltAddToEntry( vBy, fb,  w * dy );
+                }
+                else if ( fa >= 0 )
+                {
+                    Vec_FltAddToEntry( vDiag, fa, w );
+                    Vec_FltAddToEntry( vBx, fa, w * Phys_PlacePinX(pNodes + nB, pB) );
+                    Vec_FltAddToEntry( vBy, fa, w * Phys_PlacePinY(pNodes + nB, pB) );
+                }
+                else if ( fb >= 0 )
+                {
+                    Vec_FltAddToEntry( vDiag, fb, w );
+                    Vec_FltAddToEntry( vBx, fb, w * Phys_PlacePinX(pNodes + nA, pA) );
+                    Vec_FltAddToEntry( vBy, fb, w * Phys_PlacePinY(pNodes + nA, pA) );
+                }
+            }
+        }
+    }
+    /* the reference of the local solve is the seed, so a cell that no net
+       constrains stays where the seeding put it */
+    Vec_IntForEachEntry( vCone, iObj, a )
+    {
+        int iNode = 2 * iObj < nLits ? Vec_IntEntry( vNode2Idx, 2 * iObj ) : -1;
+        int f = iNode >= 0 ? Vec_IntEntry( vLoc, iNode ) : -1;
+        if ( f >= 0 )
+            Vec_FltWriteEntry( vRefX, f, pNodes[iNode].X ),
+            Vec_FltWriteEntry( vRefY, f, pNodes[iNode].Y ),
+            SumDiag += Vec_FltEntry( vDiag, f );
+    }
+    Anchor = 1e-3f * ( SumDiag / (float)nFreeLocal + 1.0f );
+    Phys_PlaceSolve( nFreeLocal, vDiag, vEI, vEJ, vEW, vBx, vRefX, Anchor, vSolX, nIterCG );
+    Phys_PlaceSolve( nFreeLocal, vDiag, vEI, vEJ, vEW, vBy, vRefY, Anchor, vSolY, nIterCG );
+    Vec_IntForEachEntry( vCone, iObj, a )
+    {
+        int iNode = 2 * iObj < nLits ? Vec_IntEntry( vNode2Idx, 2 * iObj ) : -1;
+        int f = iNode >= 0 ? Vec_IntEntry( vLoc, iNode ) : -1;
+        if ( f >= 0 )
+        {
+            pNodes[iNode].X = Vec_FltEntry( vSolX, f );
+            pNodes[iNode].Y = Vec_FltEntry( vSolY, f );
+            Vec_IntWriteEntry( vCX, 2 * iObj, (int)(pNodes[iNode].X + 0.5f) );
+            Vec_IntWriteEntry( vCY, 2 * iObj, (int)(pNodes[iNode].Y + 0.5f) );
+        }
+    }
+    /* the exact wirelength of the nets the cone takes part in */
+    Vec_IntForEachEntry( vNets, q, k )
+        Cost += Phys_PlaceHpwlNet( pNodes, vNode2Idx, vSinks, vSinkPin, nLits, q );
+    Vec_IntFree( vEI ); Vec_IntFree( vEJ ); Vec_FltFree( vEW );
+    Vec_FltFree( vDiag ); Vec_FltFree( vBx ); Vec_FltFree( vBy );
+    Vec_FltFree( vRefX ); Vec_FltFree( vRefY );
+    Vec_FltFree( vSolX ); Vec_FltFree( vSolY );
+    Vec_IntFree( vNets ); Vec_IntFree( vLoc );
+    return Cost;
+}
+
+/* leaves every candidate that is not selected at the anchor of its class,
+   so the local views, the mapper and the next cycle see it at the shared
+   boundary instead of at a coordinate of the previous selection */
+static void Phys_PlaceSeedInactive( Phys_Man_t * p, Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx,
+                                    Vec_Int_t * vCX, Vec_Int_t * vCY, int nLits )
+{
+    int c, a;
+    for ( c = 0; c < p->nClasses; c++ )
+    {
+        float X, Y;
+        if ( !Phys_PlaceClassAnchor( p, vCX, vCY, c, &X, &Y ) )
+            continue;
+        for ( a = 0; a < Phys_ChoiceClassSize( p, c ); a++ )
+        {
+            if ( a == Phys_ChoiceActiveNum( p, c ) )
+                continue;
+            Phys_PlaceSeedAlt( p, pNodes, vNode2Idx, vCX, vCY, c, a, X, Y );
+        }
+    }
+}
+
+/**Function*************************************************************
+
+  Synopsis    [Collects the nets of the placement under the selection]
+
+  Description [vSinks[d] lists the sink nodes driven by literal d, and
+               vSinkPin[d] the input pin every sink uses in that net.  A
+               fanin that refers to a class member which is not selected
+               is redirected to the selected member, so the class fanouts
+               follow the selection and the alternative under evaluation
+               keeps its internal nets.  A repeated solve, and every
+               selection round, reuses the arrays, so the net lists of the
+               previous selection are released first -- a net whose
+               driver was left out by the selection would otherwise be
+               measured at the coordinates of a cell that is no longer a
+               node of the placement.]
+
+  SideEffects [replaces the contents of vSinks and vSinkPin]
+
+***********************************************************************/
+static void Phys_PlaceCollectNets( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PNode_t * pNodes,
+                                   Vec_Int_t * vNode2Idx, Vec_Ptr_t * vSinks, Vec_Ptr_t * vSinkPin,
+                                   int nLits, int nNodes, int fChoices )
+{
+    int i, k, q;
+    for ( q = 0; q < nLits; q++ )
+    {
+        Vec_Int_t * vOld = (Vec_Int_t *)Vec_PtrEntry( vSinks, q );
+        if ( vOld != NULL )
+            Vec_IntFree( vOld );
+        vOld = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, q );
+        if ( vOld != NULL )
+            Vec_IntFree( vOld );
+        Vec_PtrWriteEntry( vSinks, q, NULL );
+        Vec_PtrWriteEntry( vSinkPin, q, NULL );
+    }
+    for ( i = 0; i < nNodes; i++ )
+    {
+        Vec_Int_t * vList, * vPins;
+        int d = -1;
+        if ( pNodes[i].Kind == 2 )
+            d = Phys_ManDriverLit( p, pGia,
+                    Gia_ObjFaninLit0p( pGia, Gia_ManObj(pGia, Abc_Lit2Var(pNodes[i].Lit)) ) );
+        else if ( pNodes[i].Kind == 0 )
+        {
+            int nFans = Phys_ManLitFaninNum( p, pGia, pNodes[i].Lit );
+            for ( k = 0; k < nFans; k++ )
+            {
+                d = Phys_ManLitFaninLit( p, pGia, pNodes[i].Lit, k );
+                if ( fChoices )
+                    d = Phys_ChoiceResolveFanin( p, Abc_Lit2Var(pNodes[i].Lit), d );
+                if ( d <= 1 || d >= nLits || Vec_IntEntry(vNode2Idx, d) < 0 )
+                    continue;
+                vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, d );
+                if ( vList == NULL )
+                {
+                    Vec_PtrWriteEntry( vSinks, d, vList = Vec_IntAlloc(4) );
+                    Vec_PtrWriteEntry( vSinkPin, d, vPins = Vec_IntAlloc(4) );
+                }
+                else
+                    vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, d );
+                Vec_IntPush( vList, i );
+                Vec_IntPush( vPins, k < PHYS_PLACE_MAX_PINS ? k : PHYS_PLACE_PIN_NONE );
+            }
+            continue;
+        }
+        if ( d <= 1 || d >= nLits || Vec_IntEntry(vNode2Idx, d) < 0 )
+            continue;
+        vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, d );
+        if ( vList == NULL )
+        {
+            Vec_PtrWriteEntry( vSinks, d, vList = Vec_IntAlloc(4) );
+            Vec_PtrWriteEntry( vSinkPin, d, vPins = Vec_IntAlloc(4) );
+        }
+        else
+            vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, d );
+        Vec_IntPush( vList, i );
+        Vec_IntPush( vPins, PHYS_PLACE_PIN_NONE ); /* a primary output has no pin */
+    }
+}
+
+/**Function*************************************************************
+
+  Synopsis    [One global placement solve of the active netlist]
+
+  Description [Builds the node set of the netlist under the current choice
+               selection, sizes the core from the active cell area, and
+               runs the quadratic and the nonlinear placement.  The
+               inactive alternatives of the choice classes get no node of
+               their own in the global problem: their cells are seeded at
+               the output anchor of their class and left there until the
+               local evaluation of the next selection round places them.
+
+               The terminals are boundary conditions, so by default the
+               placement is solved once without them, every terminal is
+               moved to the side and slot where its connected cells are,
+               and the placement is solved again with the new pins.
+
+               The solver leaves the node array in place, because the
+               selection rounds read the coordinates and the class
+               anchors from it.]
+
+  SideEffects []
+
+***********************************************************************/
+static int Phys_PlaceSolveNetlist( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars,
+                                   Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx, Vec_Int_t * vFree,
+                                   Vec_Int_t * vCX, Vec_Int_t * vCY,
+                                   Vec_Ptr_t * vSinks, Vec_Ptr_t * vSinkPin,
+                                   int * pnNodes, double * pTotalArea, float * pW, float * pH,
+                                   int * pnOverlaps )
 {
     int nObjs = Gia_ManObjNum( pGia );
-    Phys_PNode_t * pNodes;
-    Vec_Int_t * vNode2Idx, * vFreeIdx, * vFree;
-    Vec_Ptr_t * vSinks, * vSinkPin;
-    Vec_Int_t * vEI, * vEJ;
+    Vec_Int_t * vEI, * vEJ, * vFreeIdx;
     Vec_Flt_t * vEW, * vDiag, * vBx, * vBy, * vSolX, * vSolY, * vRefX, * vRefY;
     double TotalArea = 0.0;
     float x0, y0, W, H, Dbu, Anchor, AvgDiag;
-    int i, k, q, nLits, nNodes = 0, nFree = 0, nEdges = 0, nOverlaps = 0, iPass, nPasses;
-    if ( p == NULL || pGia == NULL || pPars == NULL )
-        return 0;
+    int i, k, q, nLits, nNodes = 0, nFree = 0, nFreeAll = 0, nEdges = 0, nOverlaps = 0, iPass, nPasses;
+    int fChoices = p->fHasChoices && pPars->nChoiceMode != 0;
     if ( pPars->Util <= 0.0f || pPars->Util > 1.0f )
     {
         fprintf( stdout, "Placement: target utilization %.3f should be in (0, 1].\n", pPars->Util );
@@ -1876,21 +2317,20 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
                          "run \"&phys_bind\" first.\n", nLits, nObjs );
         return 0;
     }
-    pNodes    = ABC_CALLOC( Phys_PNode_t, nLits );
-    vNode2Idx = Vec_IntStartFull( nLits );
-    vFreeIdx  = Vec_IntAlloc( 1024 );
-    vFree     = Vec_IntAlloc( 1024 );
-    vSinks    = Vec_PtrStart( nLits );
-    vSinkPin  = Vec_PtrStart( nLits );
     /* one movable node per cell instance, plus a fixed node per PI and PO;
        an inverter or a second phase cell at the same Gia object is its own
-       node, so the placer sees the netlist the mapper produced */
+       node, so the placer sees the netlist the mapper produced.  In the
+       selection mode a cell whose object is inactive in the current
+       selection is not a node of the global problem.  A selection round
+       solves again with a different node set, so the map from a literal
+       to its node is rebuilt here, not only allocated by the caller. */
+    Vec_IntFill( vNode2Idx, nLits, -1 );
     for ( i = 0; i < nLits; i++ )
     {
         Gia_Obj_t * pObj = Gia_ManObj( pGia, Abc_Lit2Var(i) );
         Phys_LibCell_t * pCell = Phys_ManLitCell( p, i );
         Phys_PNode_t * pNode = pNodes + nNodes;
-        int Kind;
+        int Kind, fActive = 1, fPlace = 1;
         if ( pCell != NULL )
             Kind = 0;
         else if ( (i & 1) == 0 && Gia_ObjIsPi(pGia, pObj) )
@@ -1899,16 +2339,28 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
             Kind = 2;
         else
             continue;
-        pNode->Lit  = i;
-        pNode->Kind = Kind;
+        /* fActive is the representative subgraph, which is the netlist the
+           flow reports in both choice modes; fPlace is what the global
+           placement moves, which in the baseline includes the candidates */
+        if ( Kind == 0 && p->fHasChoices )
+            fActive = Phys_ChoiceObjActive( p, Abc_Lit2Var(i) );
+        fPlace = fActive || (Kind == 0 && !fChoices);
+        pNode->Lit     = i;
+        pNode->Kind    = Kind;
+        pNode->fActive = fActive;
+        pNode->fPlace  = fPlace;
         if ( Kind == 0 )
         {
             int pdx, pdy, kk, nFans = Phys_ManLitFaninNum( p, pGia, i );
             int nPins = nFans < PHYS_PLACE_MAX_PINS ? nFans : PHYS_PLACE_MAX_PINS;
             Phys_PlaceCellSize( p, pCell, &pNode->W, &pNode->H );
             pNode->Fixed = 0;
-            TotalArea += (double)pNode->W * (double)pNode->H;
-            Vec_IntPush( vFree, nNodes );
+            /* the core is sized by the representative netlist, not by the
+               alternatives: the inactive candidates do not claim a part of
+               it even when the baseline places them */
+            if ( fActive )
+                TotalArea += (double)pNode->W * (double)pNode->H;
+            nFreeAll++;
             /* the pin positions inside the cell, from its LEF macro */
             for ( kk = 0; kk < nPins; kk++ )
             {
@@ -1929,20 +2381,24 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         Vec_IntWriteEntry( vNode2Idx, i, nNodes );
         nNodes++;
     }
-    nFree = Vec_IntSize( vFree );
-    if ( nFree == 0 || TotalArea <= 0.0 )
+    if ( nFreeAll == 0 || TotalArea <= 0.0 )
     {
         fprintf( stdout, "Placement: there are no mapped cells to place.\n" );
-        ABC_FREE( pNodes );
-        Vec_IntFree( vNode2Idx );
-        Vec_IntFree( vFreeIdx );
-        Vec_IntFree( vFree );
-        Vec_PtrFree( vSinks );
-        Vec_PtrFree( vSinkPin );
         return 0;
     }
-    Vec_IntGrow( vFreeIdx, nNodes );
-    Vec_IntFill( vFreeIdx, nNodes, -1 );
+    /* vFree lists the movable cells of the global problem.  In the
+       selection mode these are the active alternatives of the classes, and
+       an inactive candidate is treated like a terminal, i.e. as a fixed
+       anchor that only the local evaluation moves.  In the baseline the
+       problem is choice-blind -- every alternative is a real cell -- so
+       all of them are free, while the area, the wires and the timing that
+       the flow reports still come from the representative subgraph. */
+    Vec_IntClear( vFree );
+    for ( i = 0; i < nNodes; i++ )
+        if ( pNodes[i].Kind == 0 && pNodes[i].fPlace )
+            Vec_IntPush( vFree, i );
+    nFree = Vec_IntSize( vFree );
+    vFreeIdx = Vec_IntStartFull( nNodes );
     Vec_IntForEachEntry( vFree, i, k )
         Vec_IntWriteEntry( vFreeIdx, i, k );
     /* core area.  A pin-limited design needs a core large enough for
@@ -1978,12 +2434,20 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     }
     /* the initial positions are the center of the core, which makes the
        starting state deterministic and independent of the object order;
-       the quadratic solve then spreads the cells by connectivity */
+       the quadratic solve then spreads the cells by connectivity.  A cell
+       that already has coordinates -- a warm start, or an inactive
+       alternative seeded at its anchor -- keeps them. */
     for ( i = 0; i < nNodes; i++ )
     {
         Phys_PNode_t * pNode = pNodes + i;
         if ( pNode->Fixed )
             continue;
+        if ( Vec_IntEntry(vCX, pNode->Lit) >= 0 )
+        {
+            pNode->X = (float)Vec_IntEntry( vCX, pNode->Lit );
+            pNode->Y = (float)Vec_IntEntry( vCY, pNode->Lit );
+            continue;
+        }
         pNode->X = x0 + 0.5f * W;
         pNode->Y = y0 + 0.5f * H;
     }
@@ -2004,49 +2468,7 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
                 pNode->X = x0 + W, pNode->Y = y0 + H * (0.5f + nPo++) / (nPoTot + 1);
         }
     }
-    /* collect nets: vSinks[d] lists the sink nodes driven by literal d,
-       and vSinkPin[d] the input pin every sink uses in that net */
-    for ( i = 0; i < nNodes; i++ )
-    {
-        Vec_Int_t * vList, * vPins;
-        int d = -1;
-        if ( pNodes[i].Kind == 2 )
-            d = Phys_ManDriverLit( p, pGia,
-                    Gia_ObjFaninLit0p( pGia, Gia_ManObj(pGia, Abc_Lit2Var(pNodes[i].Lit)) ) );
-        else if ( pNodes[i].Kind == 0 )
-        {
-            int nFans = Phys_ManLitFaninNum( p, pGia, pNodes[i].Lit );
-            for ( k = 0; k < nFans; k++ )
-            {
-                d = Phys_ManLitFaninLit( p, pGia, pNodes[i].Lit, k );
-                if ( d <= 1 || d >= nLits || Vec_IntEntry(vNode2Idx, d) < 0 )
-                    continue;
-                vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, d );
-                if ( vList == NULL )
-                {
-                    Vec_PtrWriteEntry( vSinks, d, vList = Vec_IntAlloc(4) );
-                    Vec_PtrWriteEntry( vSinkPin, d, vPins = Vec_IntAlloc(4) );
-                }
-                else
-                    vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, d );
-                Vec_IntPush( vList, i );
-                Vec_IntPush( vPins, k < PHYS_PLACE_MAX_PINS ? k : PHYS_PLACE_PIN_NONE );
-            }
-            continue;
-        }
-        if ( d <= 1 || d >= nLits || Vec_IntEntry(vNode2Idx, d) < 0 )
-            continue;
-        vList = (Vec_Int_t *)Vec_PtrEntry( vSinks, d );
-        if ( vList == NULL )
-        {
-            Vec_PtrWriteEntry( vSinks, d, vList = Vec_IntAlloc(4) );
-            Vec_PtrWriteEntry( vSinkPin, d, vPins = Vec_IntAlloc(4) );
-        }
-        else
-            vPins = (Vec_Int_t *)Vec_PtrEntry( vSinkPin, d );
-        Vec_IntPush( vList, i );
-        Vec_IntPush( vPins, PHYS_PLACE_PIN_NONE ); /* a primary output has no pin */
-    }
+    Phys_PlaceCollectNets( p, pGia, pNodes, vNode2Idx, vSinks, vSinkPin, nLits, nNodes, fChoices );
     /* The placement is solved once, and, when the terminals are to be
        reassigned, a second time with the terminals moved to the places
        they connect to.  The four-side mode leaves the terminals out of
@@ -2078,9 +2500,11 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
                 fprintf( stdout, "Placement: %d nodes (%d free), core %.1f x %.1f um.\n",
                          nNodes, nFree, W / Dbu, H / Dbu );
             if ( iPass == 0 )
-                Phys_PlaceReport( "random init:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
+                Phys_PlaceReport( "start:", pNodes, vFree, vNode2Idx, vFreeIdx, vSinks, vSinkPin, nLits, Dbu );
         }
-        /* build the quadratic system over free nodes */
+        /* build the quadratic system over free nodes; a sink that is not
+           in the current selection is left out of its net, so the nets of
+           the inactive alternatives do not pull the active cells */
         Vec_IntClear( vEI );
         Vec_IntClear( vEJ );
         Vec_FltClear( vEW );
@@ -2105,7 +2529,7 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
                 if ( vList == NULL )
                     continue;
                 iDriver = Vec_IntEntry( vNode2Idx, q );
-                if ( iDriver < 0 )
+                if ( iDriver < 0 || !pNodes[iDriver].fPlace )
                     continue;
                 /* the driver uses its output pin, every sink its input pin;
                    the offsets enter the right-hand side, not the matrix */
@@ -2122,6 +2546,8 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
                 {
                     int iPin = Vec_IntEntry( vPins, k );
                     if ( fIgnoreIo && pNodes[i].Kind != 0 )
+                        continue;
+                    if ( !pNodes[i].fPlace )
                         continue;
                     Vec_IntPush( vPinIdx, i );
                     Vec_FltPush( vPinDx, Phys_PlacePinDx(pNodes + i, iPin) );
@@ -2202,7 +2628,8 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         /* Build the CSR net list of the nonlinear placement.  The driver of
            every net comes first, followed by its sinks; the pins index into
            the node array, so the fixed terminals are addressed the same way
-           as the movable cells. */
+           as the movable cells.  A net without an active driver or sink in
+           the selection is not a net of the netlist. */
         {
             Vec_Int_t * vNetStart = Vec_IntAlloc( nLits + 1 );
             Vec_Int_t * vNetPins  = Vec_IntAlloc( 4 * nLits + 16 );
@@ -2218,7 +2645,7 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
                 if ( vList == NULL )
                     continue;
                 iDriver = Vec_IntEntry( vNode2Idx, q );
-                if ( iDriver < 0 )
+                if ( iDriver < 0 || !pNodes[iDriver].fPlace )
                     continue;
                 /* every pin of the net carries the LEF offset of its cell,
                    so the smooth bounding box follows the pins and not the
@@ -2233,6 +2660,8 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
                 {
                     int iPin = Vec_IntEntry( vPins, k );
                     if ( fIgnoreIo && pNodes[i].Kind != 0 )
+                        continue;
+                    if ( !pNodes[i].fPlace )
                         continue;
                     Vec_IntPush( vNetPins, i );
                     Vec_FltPush( vNetDx, Phys_PlacePinDx(pNodes + i, iPin) );
@@ -2283,7 +2712,266 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
                          PinBefore / Dbu, PinAfter / Dbu );
         }
     }
-    /* save the result */
+    /* the coordinate view carries the placement into the next selection
+       round; the cells the solve did not move keep their old value */
+    for ( i = 0; i < nNodes; i++ )
+    {
+        Vec_IntWriteEntry( vCX, pNodes[i].Lit, (int)(pNodes[i].X + 0.5f) );
+        Vec_IntWriteEntry( vCY, pNodes[i].Lit, (int)(pNodes[i].Y + 0.5f) );
+    }
+    *pnNodes   = nNodes;
+    *pTotalArea = TotalArea;
+    *pW = W;
+    *pH = H;
+    if ( pnOverlaps != NULL )
+        *pnOverlaps = nOverlaps;
+    Vec_IntFree( vFreeIdx );
+    Vec_IntFree( vEI ); Vec_IntFree( vEJ );
+    Vec_FltFree( vEW ); Vec_FltFree( vDiag );
+    Vec_FltFree( vBx ); Vec_FltFree( vBy );
+    Vec_FltFree( vSolX ); Vec_FltFree( vSolY );
+    Vec_FltFree( vRefX ); Vec_FltFree( vRefY );
+    return 1;
+}
+
+
+/* puts the selection of the classes into the node flags; the rounds are a
+   mode-1 construct, so an active cell is also a cell of the global problem */
+static void Phys_PlaceActiveRefresh( Phys_Man_t * p, Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx, int nLits )
+{
+    int i, k;
+    Vec_IntForEachEntry( vNode2Idx, i, k )
+    {
+        if ( i >= 0 && pNodes[i].Kind == 0 )
+            pNodes[i].fActive = pNodes[i].fPlace = Phys_ChoiceObjActive( p, Abc_Lit2Var(pNodes[i].Lit) );
+    }
+    (void)nLits;
+}
+
+/* the wirelength of a class under the current selection, measured exactly
+   over the nets its cone takes part in; this is the cost the selection
+   rounds compare, and because it is a part of the total wirelength it is
+   consistent with the global placement */
+static double Phys_PlaceClassCost( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PNode_t * pNodes,
+                                   Vec_Int_t * vNode2Idx, Vec_Ptr_t * vSinks, Vec_Ptr_t * vSinkPin,
+                                   int nLits, int iClass, double * pTotal )
+{
+    Vec_Int_t * vCone = Phys_ChoiceClassCone( p, iClass, Phys_ChoiceActiveNum(p, iClass) );
+    Vec_Int_t * vNets = Vec_IntAlloc( 16 );
+    double Cost = 0.0;
+    int k, q;
+    if ( vCone == NULL )
+    {
+        Vec_IntFree( vNets );
+        return 0.0;
+    }
+    Phys_PlaceConeNets( p, pGia, vCone, vSinks, nLits, vNets );
+    Vec_IntForEachEntry( vNets, q, k )
+    {
+        double Net = Phys_PlaceHpwlNet( pNodes, vNode2Idx, vSinks, vSinkPin, nLits, q );
+        Cost += Net;
+        if ( pTotal != NULL )
+            *pTotal += Net;
+    }
+    Vec_IntFree( vNets );
+    return Cost;
+}
+
+/* the total wirelength of the netlist under the current selection */
+static double Phys_PlaceHpwlActive( Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx,
+                                    Vec_Ptr_t * vSinks, Vec_Ptr_t * vSinkPin, int nLits )
+{
+    double Cost = 0.0;
+    int q;
+    for ( q = 0; q < nLits; q++ )
+        Cost += Phys_PlaceHpwlNet( pNodes, vNode2Idx, vSinks, vSinkPin, nLits, q );
+    return Cost;
+}
+
+/**Function*************************************************************
+
+  Synopsis    [Selection rounds of the choice classes]
+
+  Description [Block coordinate descent over (coordinates, selection).
+               With the current selection placed, every alternative of a
+               class is placed locally at the class anchor with the shared
+               boundary fixed, and the wirelength of its incident nets is
+               measured exactly.  The alternative with the lowest cost
+               replaces the selected one when it beats it by more than the
+               tolerance, which keeps the selection from oscillating on a
+               tie.  The coordinates of the local solve are the warm start
+               of the next global placement, so the cycle is: place the
+               active alternatives globally, evaluate every alternative
+               locally, select, and place again.
+
+               The alternatives are independent, so the order of the
+               classes is immaterial for the cost of one round; two rounds
+               are the default because a selection changes the anchors
+               that the other classes were evaluated against.]
+
+  SideEffects []
+
+***********************************************************************/
+static int Phys_PlaceSelectRounds( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars,
+                                   Phys_PNode_t * pNodes, Vec_Int_t * vNode2Idx, Vec_Int_t * vFree,
+                                   Vec_Int_t * vCX, Vec_Int_t * vCY,
+                                   Vec_Ptr_t * vSinks, Vec_Ptr_t * vSinkPin, int nLits, int nNodes, float Dbu )
+{
+    int Round, c, a, nChanged, nSwitched = 0;
+    for ( Round = 1; Round < pPars->nChoiceRounds; Round++ )
+    {
+        /* measured at the coordinates the round starts from, which are the
+           re-placed ones when the previous round changed the selection */
+        double Before = Phys_PlaceHpwlActive( pNodes, vNode2Idx, vSinks, vSinkPin, nLits );
+        nChanged = 0;
+        for ( c = 0; c < p->nClasses; c++ )
+        {
+            int iActive = Phys_ChoiceActiveNum( p, c );
+            int iBest = iActive;
+            double BestCost, Total;
+            if ( Phys_ChoiceClassSize(p, c) < 2 )
+                continue;
+            /* the cost of the class as it stands; the nets are counted once
+               per class, so the total accumulates the same value */
+            Total = 0.0;
+            BestCost = Phys_PlaceClassCost( p, pGia, pNodes, vNode2Idx, vSinks, vSinkPin, nLits, c, &Total );
+            for ( a = 0; a < Phys_ChoiceClassSize(p, c); a++ )
+            {
+                double Cost;
+                if ( a == iActive )
+                    continue;
+                Phys_ChoiceSetActive( p, pGia, c, a );
+                Phys_PlaceActiveRefresh( p, pNodes, vNode2Idx, nLits );
+                Cost = Phys_PlaceEvalAlt( p, pGia, pNodes, vNode2Idx, vCX, vCY, vSinks, vSinkPin, nLits, c, a, pPars->nIterCG );
+                if ( Cost < BestCost * (1.0 - (double)pPars->ChoiceTol) )
+                    BestCost = Cost, iBest = a;
+            }
+            if ( iBest != iActive )
+            {
+                Phys_ChoiceSetActive( p, pGia, c, iBest );
+                Phys_PlaceActiveRefresh( p, pNodes, vNode2Idx, nLits );
+                nChanged++;
+                nSwitched++;
+            }
+            else
+            {
+                /* the loop above left the class on the last candidate it
+                   tried; the selection is the old one unless it won */
+                Phys_ChoiceSetActive( p, pGia, c, iActive );
+                Phys_PlaceActiveRefresh( p, pNodes, vNode2Idx, nLits );
+            }
+        }
+        /* the fanouts of a class follow its selection, so the net lists of
+           the round before describe the netlist that no longer exists */
+        if ( nChanged > 0 )
+            Phys_PlaceCollectNets( p, pGia, pNodes, vNode2Idx, vSinks, vSinkPin, nLits, nNodes, 1 );
+        if ( pPars->fVerbose )
+        {
+            double After = Phys_PlaceHpwlActive( pNodes, vNode2Idx, vSinks, vSinkPin, nLits );
+            fprintf( stdout, "Placement: selection round %d changed %d class(es); "
+                     "wirelength %.1f -> %.1f um.\n", Round, nChanged, Before / Dbu, After / Dbu );
+        }
+        if ( nChanged == 0 )
+            break;
+        /* the selection changed, so the global placement of the new one
+           is solved again from the coordinates of the last round */
+        {
+            int nNodes2 = 0;
+            double Area2 = 0.0;
+            float W2 = 0.0f, H2 = 0.0f;
+            if ( !Phys_PlaceSolveNetlist( p, pGia, pPars, pNodes, vNode2Idx, vFree, vCX, vCY,
+                                          vSinks, vSinkPin, &nNodes2, &Area2, &W2, &H2, NULL ) )
+                break;
+        }
+        Phys_PlaceClassAnchors( p, pNodes, vNode2Idx, vCX, vCY, nLits );
+    }
+    return nSwitched;
+}
+
+
+/**Function*************************************************************
+
+  Synopsis    [Runs analytical placement]
+
+  Description [Places the bound netlist.  By default, and for a network
+               without choices, every cell of the binding is a node of the
+               placement: the alternatives of a choice class all claim a
+               part of the density and all pull their nets, which is the
+               choice-blind baseline.  With "-c" only the selected
+               alternative of every class is placed globally, and the
+               selection rounds then weigh the alternatives against each
+               other at the output anchor of their class.  In both modes
+               the area, the wirelength and the utilization reported
+               describe the representative subgraph.
+
+               The end state is the placed netlist of the final selection;
+               the inactive alternatives are left at the coordinates of
+               their last local evaluation, which is what the next cycle
+               or the local views read.]
+
+  SideEffects []
+
+***********************************************************************/
+int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
+{
+    int nObjs = Gia_ManObjNum( pGia );
+    Phys_PNode_t * pNodes;
+    Vec_Int_t * vNode2Idx, * vFree, * vCX, * vCY;
+    Vec_Ptr_t * vSinks, * vSinkPin;
+    double TotalArea = 0.0;
+    float W = 0.0f, H = 0.0f;
+    float Dbu;
+    int i, q, nLits, nNodes = 0, nOverlaps = 0;
+    if ( p == NULL || pGia == NULL || pPars == NULL )
+        return 0;
+    Dbu = (float)(p->pLef ? p->pLef->Units.Dbu : 1000);
+    /* the classes belong to the network the placement is made for; a new
+       sibling list is picked up here, an unchanged one keeps its
+       selection, which is the warm start of the next placement */
+    if ( !p->fHasChoices )
+        Phys_ChoiceDerive( p, pGia );
+    if ( p->fHasChoices && pPars->fVerbose )
+        Phys_ChoicePrint( p, pPars->fVerbose );
+    nLits = Phys_ManLitNum( p );
+    pNodes    = ABC_CALLOC( Phys_PNode_t, nLits );
+    vNode2Idx = Vec_IntStartFull( nLits );
+    vFree     = Vec_IntAlloc( 1024 );
+    vSinks    = Vec_PtrStart( nLits );
+    vSinkPin  = Vec_PtrStart( nLits );
+    /* The coordinate view of the placement.  It starts from the coordinates
+       of a previous placement, so a repeated placement is a warm start, and
+       it is where the selection rounds keep the anchors and the evaluated
+       candidates.  A rebind clears the placement and therefore this view. */
+    vCX = Vec_IntStartFull( nLits );
+    vCY = Vec_IntStartFull( nLits );
+    if ( p->vLitX != NULL )
+        for ( i = 0; i < nLits && i < Vec_IntSize(p->vLitX); i++ )
+            Vec_IntWriteEntry( vCX, i, Vec_IntEntry(p->vLitX, i) ),
+            Vec_IntWriteEntry( vCY, i, Vec_IntEntry(p->vLitY, i) );
+    if ( !Phys_PlaceSolveNetlist( p, pGia, pPars, pNodes, vNode2Idx, vFree, vCX, vCY,
+                                  vSinks, vSinkPin, &nNodes, &TotalArea, &W, &H, &nOverlaps ) )
+    {
+        ABC_FREE( pNodes );
+        Vec_IntFree( vNode2Idx );
+        Vec_IntFree( vFree );
+        Vec_IntFree( vCX );
+        Vec_IntFree( vCY );
+        Vec_PtrFree( vSinks );
+        Vec_PtrFree( vSinkPin );
+        return 0;
+    }
+    if ( p->fHasChoices && pPars->nChoiceMode != 0 && p->nClasses > 0 )
+    {
+        Phys_PlaceClassAnchors( p, pNodes, vNode2Idx, vCX, vCY, nLits );
+        Phys_PlaceSeedInactive( p, pNodes, vNode2Idx, vCX, vCY, nLits );
+        Phys_PlaceSelectRounds( p, pGia, pPars, pNodes, vNode2Idx, vFree, vCX, vCY, vSinks, vSinkPin, nLits, nNodes, Dbu );
+        Phys_PlaceClassAnchors( p, pNodes, vNode2Idx, vCX, vCY, nLits );
+        Phys_PlaceSeedInactive( p, pNodes, vNode2Idx, vCX, vCY, nLits );
+    }
+    /* save the result.  Every node of the binding has a coordinate: the
+       placed cells of the selection, and the candidates at the anchor or
+       at their last local evaluation.  The object-level coordinate is the
+       one of the positive phase, which the mapper and the dump read. */
     Phys_ManClearPlace( p );
     p->vObjX = Vec_IntStartFull( nObjs );
     p->vObjY = Vec_IntStartFull( nObjs );
@@ -2296,8 +2984,6 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
         int iObj = Abc_Lit2Var( pNodes[i].Lit );
         Vec_IntWriteEntry( p->vLitX, pNodes[i].Lit, sx );
         Vec_IntWriteEntry( p->vLitY, pNodes[i].Lit, sy );
-        /* the object-level coordinate is the one of the positive phase,
-           which the mapper and the dump read */
         if ( Vec_IntEntry( p->vObjX, iObj ) < 0 )
         {
             Vec_IntWriteEntry( p->vObjX, iObj, sx );
@@ -2310,10 +2996,7 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     p->CoreH   = (int)(H + 0.5f);
     p->fPlaced = 1;
     Phys_ManClearTiming( p );
-    /* total half-perimeter wirelength of the placed netlist */
-    p->Hpwl = (float)( Phys_PlaceHpwl( pNodes, vNode2Idx, vSinks, vSinkPin, nLits ) / Dbu );
-    /* routing congestion of the legal placement; &phys_dump and &phys_map
-       both read this map */
+    p->Hpwl = (float)( Phys_PlaceHpwlActive( pNodes, vNode2Idx, vSinks, vSinkPin, nLits ) / Dbu );
     {
         Phys_Cong_t * pCong = Phys_CongBuild( p, pGia, pPars->nCongBins );
         if ( pPars->fVerbose )
@@ -2336,16 +3019,26 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
             sprintf( Overlaps, "legalization skipped" );
         fprintf( stdout, "Placement: %d cells placed, %s, utilization %.2f, "
                  "%d/%d rows used, max row occupancy %.2f, wirelength %.1f um, cell area %.1f um^2.\n",
-                 nFree, Overlaps, TotalArea / ((double)W * (double)H),
-                 Phys_PlaceRowsUsed( pNodes, vFree, y0, H, p->SiteH ),
+                 Vec_IntSize(vFree), Overlaps, TotalArea / ((double)W * (double)H),
+                 Phys_PlaceRowsUsed( pNodes, vFree, 0.0f, H, p->SiteH ),
                  (int)(H / p->SiteH),
-                 Phys_PlaceMaxRowOcc( pNodes, vFree, y0, H, p->SiteH, W ), p->Hpwl,
+                 Phys_PlaceMaxRowOcc( pNodes, vFree, 0.0f, H, p->SiteH, W ), p->Hpwl,
                  TotalArea / ((double)Dbu * (double)Dbu) );
+        /* the area, the wirelength and the utilization above describe the
+           representative subgraph in both choice modes: in the baseline
+           the candidates are placed but they are not part of the netlist
+           whose cost is reported */
+        if ( p->fHasChoices )
+            fprintf( stdout, "Placement: %d of the %d placed cells are alternatives that "
+                     "were placed but not selected; the area is that of the "
+                     "representative subgraph.\n",
+                     Vec_IntSize(vFree) - Phys_PlaceActiveCells(pNodes, nNodes), Vec_IntSize(vFree) );
     }
     ABC_FREE( pNodes );
     Vec_IntFree( vNode2Idx );
-    Vec_IntFree( vFreeIdx );
     Vec_IntFree( vFree );
+    Vec_IntFree( vCX );
+    Vec_IntFree( vCY );
     for ( q = 0; q < nLits; q++ )
     {
         if ( Vec_PtrEntry(vSinks, q) != NULL )
@@ -2355,13 +3048,9 @@ int Phys_PlaceRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_PlacePars_t * pPars )
     }
     Vec_PtrFree( vSinks );
     Vec_PtrFree( vSinkPin );
-    Vec_IntFree( vEI ); Vec_IntFree( vEJ );
-    Vec_FltFree( vEW ); Vec_FltFree( vDiag );
-    Vec_FltFree( vBx ); Vec_FltFree( vBy );
-    Vec_FltFree( vSolX ); Vec_FltFree( vSolY );
-    Vec_FltFree( vRefX ); Vec_FltFree( vRefY );
     return 1;
 }
+
 
 void Phys_PlacePrint( Phys_Man_t * p )
 {
