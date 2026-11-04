@@ -256,6 +256,24 @@ static int Phys_StaFanin( Phys_Man_t * p, int fChoices, int iSinkObj, int iLit )
 {
     return fChoices ? Phys_ChoiceResolveFanin( p, iSinkObj, iLit ) : iLit;
 }
+/* The slot that holds the timing of a fanin literal.  A cell is bound to
+   the literal that drives it, so a complemented literal that carries an
+   instance of its own -- a mapped inverter, or an inverter the pre-mapping
+   bind created -- is read as it stands.  A complemented literal with no
+   instance is a signal that a choice resolution redirected to the other
+   polarity of a selected member; its timing lives in the positive slot,
+   with the two phases exchanged. */
+static int Phys_StaFaninSlot( Phys_Man_t * p, int iLit )
+{
+    if ( Abc_LitIsCompl( iLit ) && !Phys_ManLitIsCell( p, iLit ) &&
+         Phys_ManLitIsCell( p, Abc_Var2Lit(Abc_Lit2Var(iLit), 0) ) )
+        return Abc_Var2Lit( Abc_Lit2Var(iLit), 0 );
+    return iLit;
+}
+static int Phys_StaFaninCompl( Phys_Man_t * p, int iLit )
+{
+    return Phys_StaFaninSlot( p, iLit ) != iLit;
+}
 
 
 /**Function*************************************************************
@@ -516,17 +534,32 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
             Gia_Obj_t * pObj = Gia_ManObj( pGia, iObj );
             if ( (i & 1) == 0 && Gia_ObjIsPo(pGia, pObj) )
             {
+                /* the output reads the class, so the arrival comes from
+                   the selected member, not from the member the AIG edge
+                   still points at -- the same resolution the net build
+                   used above */
                 int d = Phys_ManDriverLit( p, pGia, Gia_ObjFaninLit0p(pGia, pObj) );
+                int slot, fCompl;
+                d = Phys_StaFanin( p, fChoices, iObj, d );
+                slot = d > 1 && d < nLits ? Phys_StaFaninSlot( p, d ) : d;
+                fCompl = d > 1 && d < nLits && Phys_StaFaninCompl( p, d );
                 float Delay = d > 1 && d < nLits ? Vec_FltEntry( vInWire, i ) : 0.0f;
-                float ArrR = d > 1 && d < nLits ? Vec_FltEntry( vArrR, d ) + Delay : 0.0f;
-                float ArrF = d > 1 && d < nLits ? Vec_FltEntry( vArrF, d ) + Delay : 0.0f;
+                float ArrR = d > 1 && d < nLits ? Vec_FltEntry( vArrR, slot ) + Delay : 0.0f;
+                float ArrF = d > 1 && d < nLits ? Vec_FltEntry( vArrF, slot ) + Delay : 0.0f;
                 float Arr  = Phys_StaMax( ArrR, ArrF );
+                /* an inverted fanin has the rise of the fall */
+                if ( fCompl )
+                {
+                    float Tmp = ArrR; ArrR = ArrF; ArrF = Tmp;
+                }
                 Vec_FltWriteEntry( vArrR, i, ArrR );
                 Vec_FltWriteEntry( vArrF, i, ArrF );
                 if ( d > 1 && d < nLits )
                 {
-                    Vec_FltWriteEntry( vSlewR, i, Phys_StaSlewAfter( Vec_FltEntry(vSlewR, d), Delay ) );
-                    Vec_FltWriteEntry( vSlewF, i, Phys_StaSlewAfter( Vec_FltEntry(vSlewF, d), Delay ) );
+                    float SlwR = Vec_FltEntry(vSlewR, slot);
+                    float SlwF = Vec_FltEntry(vSlewF, slot);
+                    Vec_FltWriteEntry( vSlewR, i, Phys_StaSlewAfter( fCompl ? SlwF : SlwR, Delay ) );
+                    Vec_FltWriteEntry( vSlewF, i, Phys_StaSlewAfter( fCompl ? SlwR : SlwF, Delay ) );
                     Vec_IntWriteEntry( vPred, i, d );
                 }
                 Vec_IntPush( vEnds, iObj );
@@ -570,12 +603,21 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
                 }
                 else
                 {
+                    /* a fanin redirected to the other polarity of the
+                       selected member reads the positive slot with the
+                       phases exchanged */
+                    int slot = Phys_StaFaninSlot( p, d );
+                    int fSw = Phys_StaFaninCompl( p, d );
+                    float ArrR = Vec_FltEntry( vArrR, slot );
+                    float ArrF = Vec_FltEntry( vArrF, slot );
+                    float SlwR = Vec_FltEntry( vSlewR, slot );
+                    float SlwF = Vec_FltEntry( vSlewF, slot );
                     Delay   = Vec_IntEntry(vPinOff, i) >= 0 ?
                               Vec_FltEntry( vPinDelay, Vec_IntEntry(vPinOff, i) + k ) : 0.0f;
-                    InR     = Vec_FltEntry( vArrR, d ) + Delay;
-                    InF     = Vec_FltEntry( vArrF, d ) + Delay;
-                    InSlewR = Phys_StaSlewAfter( Vec_FltEntry(vSlewR, d), Delay );
-                    InSlewF = Phys_StaSlewAfter( Vec_FltEntry(vSlewF, d), Delay );
+                    InR     = (fSw ? ArrF : ArrR) + Delay;
+                    InF     = (fSw ? ArrR : ArrF) + Delay;
+                    InSlewR = Phys_StaSlewAfter( fSw ? SlwF : SlwR, Delay );
+                    InSlewF = Phys_StaSlewAfter( fSw ? SlwR : SlwF, Delay );
                 }
                 if ( pOut == NULL || pInPin == NULL || (pArc = Phys_LibPinFindArc( pOut, pInPin->pName )) == NULL )
                 {
@@ -764,8 +806,8 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
             d = Phys_ManDriverLit( p, pGia, Gia_ObjFaninLit0p(pGia, pObj) );
             d = Phys_StaFanin( p, fChoices, i, d );
             Vec_FltWriteEntry( vReq, 2*i, PeriodUsed );
-            if ( d > 1 && d < nLits && Vec_FltEntry(vReq, d) > PeriodUsed - Vec_FltEntry(vInWire, 2*i) )
-                Vec_FltWriteEntry( vReq, d, PeriodUsed - Vec_FltEntry(vInWire, 2*i) );
+            if ( d > 1 && d < nLits && Vec_FltEntry(vReq, Phys_StaFaninSlot(p,d)) > PeriodUsed - Vec_FltEntry(vInWire, 2*i) )
+                Vec_FltWriteEntry( vReq, Phys_StaFaninSlot(p,d), PeriodUsed - Vec_FltEntry(vInWire, 2*i) );
         }
         for ( i = nLits - 1; i >= 2; i-- )
         {
@@ -787,13 +829,15 @@ int Phys_StaRun( Phys_Man_t * p, Gia_Man_t * pGia, Phys_StaPars_t * pPars )
                 int d = Phys_StaFanin( p, fChoices, Abc_Lit2Var(i),
                                        Phys_ManLitFaninLit( p, pGia, i, k ) );
                 float Need = Req;
+                int slot;
                 if ( d <= 1 || d >= nLits || off < 0 || off + k >= Vec_FltSize(vPinDelay) )
                     continue;
+                slot = Phys_StaFaninSlot( p, d );
                 Need -= Vec_FltEntry( vPinDelay, off + k );
                 if ( off + k < Vec_FltSize(vPinGateDelay) )
                     Need -= Vec_FltEntry( vPinGateDelay, off + k );
-                if ( Vec_FltEntry(vReq, d) > Need )
-                    Vec_FltWriteEntry( vReq, d, Need );
+                if ( Vec_FltEntry(vReq, slot) > Need )
+                    Vec_FltWriteEntry( vReq, slot, Need );
             }
         }
         for ( i = 1; i < nObjs; i++ )

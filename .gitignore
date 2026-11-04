@@ -72,6 +72,8 @@ abc.history
 phys_ws/
 # wire-model experiment workspace (test/phys_steiner_exp.sh)
 phys_steiner_ws/
+# choice-placement comparison workspace (test/phys_choice_exp.sh)
+phys_choice_ws/
 # unit-RC-from-layer check workspace (test/phys_signal_rc.sh)
 phys_rc_ws/
 # archive of the measurement artifacts copied from /tmp (see phys_exp/README.md)
