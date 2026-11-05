@@ -980,9 +980,15 @@ static inline float Nf_PhysViol( Jf_Phys_t * pPh, int iObj, float Arr )
     return Arr > pPh->pReq[iObj] ? Arr - pPh->pReq[iObj] : 0.0f;
 }
 /* Predicted arrival at the node of an arrival that reaches one leaf, in
-   ps: the arrival converted from the fixed point of the mapper plus the
-   Elmore wire delay from the leaf to the node, which comes from the
-   placement (coordinates, wire RC and the capacitance of the net). */
+   ps: the later of the arrival the mapper propagated to the leaf and the
+   arrival the placement timing analysis (&phys_sta) gives the same leaf,
+   plus the Elmore wire delay from the leaf to the node, which comes from
+   the placement (coordinates, wire RC and the capacitance of the net).
+   The mapper's own arrival at a leaf only knows the cuts it has already
+   committed to; &phys_sta has seen the whole cone and, in the choice
+   mode, the alternative every class selected, so its arrival is a floor
+   the key must not fall below.  Without pArr (the legacy and no-timing
+   cases) the key is the mapper arrival alone, as before. */
 static inline float Nf_PhysPinArr( Nf_Man_t * p, int iObj, int iLeaf, int ArrScl )
 {
     Jf_Phys_t * pPh = p->pPars->pPhys;
@@ -991,6 +997,8 @@ static inline float Nf_PhysPinArr( Nf_Man_t * p, int iObj, int iLeaf, int ArrScl
         return Arr;
     if ( iObj < 0 || iObj >= pPh->nObjs || iLeaf < 0 || iLeaf >= pPh->nObjs )
         return Arr;
+    if ( pPh->pArr != NULL && pPh->pArr[iLeaf] > Arr )
+        Arr = pPh->pArr[iLeaf];
     return Arr + Nf_CutPhysWireDelay( pPh, iObj, iLeaf );
 }
 /* Predicted arrival of the cut, in ps: the largest predicted arrival of
