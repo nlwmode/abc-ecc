@@ -1170,7 +1170,8 @@ static int Abc_PhysPickPhase( Phys_Lib_t * pLib, int p0, int p1, int Demand )
   SideEffects []
 
 ***********************************************************************/
-static int Abc_PhysBindVirtual( Abc_Frame_t * pAbc, const char * pCellName, int fVerbose )
+static int Abc_PhysBindVirtual( Abc_Frame_t * pAbc, const char * pCellName,
+                                Vec_Ptr_t * vCellMap, int fVerbose )
 {
     Phys_Man_t * pMan = (Phys_Man_t *)pAbc->pPhysMan;
     Gia_Man_t * pGia = pAbc->pGia;
@@ -1246,7 +1247,12 @@ static int Abc_PhysBindVirtual( Abc_Frame_t * pAbc, const char * pCellName, int 
             nBuf++;
         else if ( Gia_ObjIsMuxId(pGia, i) )
             nMux++;
-        if ( fSuper )
+        /* a rebind of a reduced network keeps the cell the original node
+           was bound to, so the two netlists differ in their cells, not in
+           the way they were modeled */
+        if ( vCellMap != NULL && Vec_PtrEntry( vCellMap, i ) != NULL )
+            pCellNode = (Phys_LibCell_t *)Vec_PtrEntry( vCellMap, i );
+        else if ( fSuper )
         {
             int p0 = Gia_ObjFaninC0(pObj);
             int p1 = Gia_ObjIsBuf(pObj) ? 0 : Gia_ObjFaninC1(pObj);
@@ -1306,7 +1312,8 @@ static int Abc_PhysBindVirtual( Abc_Frame_t * pAbc, const char * pCellName, int 
   SideEffects []
 
 ***********************************************************************/
-static int Abc_PhysBind( Abc_Frame_t * pAbc, const char * pCellName, int fVerbose )
+static int Abc_PhysBind( Abc_Frame_t * pAbc, const char * pCellName,
+                         Vec_Ptr_t * vCellMap, int fVerbose )
 {
     Phys_Man_t * pMan = (Phys_Man_t *)pAbc->pPhysMan;
     Gia_Man_t * pGia = pAbc->pGia;
@@ -1317,7 +1324,7 @@ static int Abc_PhysBind( Abc_Frame_t * pAbc, const char * pCellName, int fVerbos
     int nObjs = Gia_ManObjNum( pGia );
     int nCells = 0, i, nBound = 0, nInv = 0, nBuf = 0, nSkip = 0, nNoLib = 0, nNoMacro = 0;
     if ( pGia->vCellMapping == NULL )
-        return Abc_PhysBindVirtual( pAbc, pCellName, fVerbose );
+        return Abc_PhysBindVirtual( pAbc, pCellName, vCellMap, fVerbose );
     if ( pCellName != NULL && fVerbose )
         Abc_Print( 1, "The network is mapped; the virtual-cell option \"%s\" is not used.\n", pCellName );
     pMio = (Mio_Library_t *)Abc_FrameReadLibGen();
@@ -1487,7 +1494,7 @@ int Abc_CommandPhysBind( Abc_Frame_t * pAbc, int argc, char ** argv )
         Abc_Print( -1, "The genlib library is not installed. Run \"&phys_start\" first.\n" );
         return 1;
     }
-    return Abc_PhysBind( pAbc, pCellName, fVerbose );
+    return Abc_PhysBind( pAbc, pCellName, NULL, fVerbose );
 
 usage:
     Abc_Print( -2, "usage: &phys_bind [-c cell] [-vh]\n" );
@@ -1529,11 +1536,11 @@ usage:
 int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
     Phys_PlacePars_t Pars, Def;
-    int c, fVerbose = 0;
+    int c, fVerbose = 0, fReduce = 0;
     Phys_PlaceSetDefault( &Def );
     Pars = Def;
     Extra_UtilGetoptReset();
-    while ( (c = Extra_UtilGetopt( argc, argv, "u:a:i:s:o:g:p:e:cr:t:lvh" )) != EOF )
+    while ( (c = Extra_UtilGetopt( argc, argv, "u:a:w:y:Ai:s:o:g:p:e:cr:t:DRlvh" )) != EOF )
     {
         switch ( c )
         {
@@ -1544,6 +1551,29 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
         case 'a':
             if ( globalUtilOptarg == NULL ) goto usage;
             Pars.Aspect = (float)atof( globalUtilOptarg );
+            break;
+        case 'w':
+            if ( globalUtilOptarg == NULL ) goto usage;
+            Pars.CoreW = (float)atof( globalUtilOptarg );
+            if ( Pars.CoreW < 0.0f )
+            {
+                Abc_Print( -1, "The core width should not be negative.\n" );
+                goto usage;
+            }
+            break;
+        case 'y':
+            if ( globalUtilOptarg == NULL ) goto usage;
+            Pars.CoreH = (float)atof( globalUtilOptarg );
+            if ( Pars.CoreH < 0.0f )
+            {
+                Abc_Print( -1, "The core height should not be negative.\n" );
+                goto usage;
+            }
+            break;
+        case 'A':
+            /* the refutation of the selection: a flow that cannot select
+               sizes its floorplan by every alternative it places */
+            Pars.fCoreAll ^= 1;
             break;
         case 'i':
             if ( globalUtilOptarg == NULL ) goto usage;
@@ -1607,6 +1637,17 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
                 goto usage;
             }
             break;
+        case 'D':
+            /* the dense control: the selection still decides and scores
+               the netlist, but the placement moves every alternative */
+            Pars.fPlaceAlts ^= 1;
+            break;
+        case 'R':
+            /* delete the alternatives the placer does not select, so that
+               the netlist that is placed is the one the sparse placement
+               of the choice graph describes */
+            fReduce ^= 1;
+            break;
         case 'l':
             Pars.fLegalize = 1;
             break;
@@ -1632,16 +1673,85 @@ int Abc_CommandPhysPlace( Abc_Frame_t * pAbc, int argc, char ** argv )
         return 1;
     }
     Pars.fVerbose = fVerbose;
+    /* "-R" materializes the netlist the selection describes: the cones of
+       the alternatives that are not selected are deleted, their fanouts
+       follow the selected member, and the reduced network is bound again
+       -- so the placement that follows is choice-blind and yet has the
+       cells of the sparse placement.  It is the control that tells the
+       placement model from the netlist it is given. */
+    if ( fReduce )
+    {
+        Phys_Man_t * pMan = (Phys_Man_t *)pAbc->pPhysMan;
+        Gia_Man_t * pTemp;
+        Vec_Int_t * vMap;
+        Vec_Ptr_t * vCellMap;
+        int nObjs = Gia_ManObjNum( pAbc->pGia ), nClasses, i;
+        if ( pAbc->pGia->vCellMapping != NULL )
+        {
+            Abc_Print( -1, "&phys_place -R: the network is mapped; reduce it before \"&phys_map\".\n" );
+            return 1;
+        }
+        if ( !Phys_ChoiceDerive( pMan, pAbc->pGia ) )
+        {
+            /* nothing to delete: the network is its own selection, so the
+               control arm degenerates to a plain placement of it */
+            Abc_Print( 1, "Placement: the network has no choice class; -R places it as it is.\n" );
+            Phys_ChoiceFree( pMan );
+        }
+        else
+        {
+            nClasses = pMan->nClasses;
+            vMap = Vec_IntAlloc( nObjs );
+            pTemp = Phys_ChoiceReduce( pMan, pAbc->pGia, vMap );
+            /* the virtual cell of a node is chosen from the phases its
+               fanouts demand, so binding the reduced network on its own
+               would give some nodes a different cell than the same node
+               had in the choice graph.  The binding is carried over
+               instead: the cell of the node the duplicate was built from,
+               so that the two placements differ in the cells they have,
+               not in how each cell was modeled. */
+            vCellMap = Vec_PtrStart( Gia_ManObjNum(pTemp) );
+            for ( i = 1; i < Gia_ManObjNum(pTemp); i++ )
+            {
+                int iOld = Vec_IntEntry( vMap, i );
+                if ( iOld > 0 && iOld < nObjs && iOld < Vec_PtrSize(pMan->vObjToCell) )
+                    Vec_PtrWriteEntry( vCellMap, i, Vec_PtrEntry(pMan->vObjToCell, iOld) );
+            }
+            Vec_IntFree( vMap );
+            Phys_ChoiceFree( pMan );
+            Abc_FrameUpdateGia( pAbc, pTemp );
+            Phys_ManClearPlace( pMan );
+            if ( Abc_PhysBind( pAbc, NULL, vCellMap, 0 ) )
+            {
+                Vec_PtrFree( vCellMap );
+                return 1;
+            }
+            Vec_PtrFree( vCellMap );
+            Abc_Print( 1, "Placement: reduced the choice graph to its selection: %d classes, "
+                          "%d -> %d objects.\n", nClasses, nObjs, Gia_ManObjNum(pAbc->pGia) );
+        }
+    }
     if ( !Phys_PlaceRun( (Phys_Man_t *)pAbc->pPhysMan, pAbc->pGia, &Pars ) )
         return 1;
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: &phys_place [-u num] [-a num] [-i num] [-s num] [-o num] [-g num] [-p num] [-e num] [-cr num] [-t num] [-lvh]\n" );
+    Abc_Print( -2, "usage: &phys_place [-u num] [-a num] [-w num] [-y num] [-A] [-i num] [-s num] [-o num] [-g num] [-p num] [-e num] [-cr num] [-t num] [-DRlvh]\n" );
     Abc_Print( -2, "\t          places the bound Gia netlist (virtual AIG cells before\n" );
     Abc_Print( -2, "\t          mapping, mapped standard cells afterwards)\n" );
-    Abc_Print( -2, "\t-u num  : target core utilization, 0 < num <= 1 [default = %.2f]\n", Def.Util );
+    Abc_Print( -2, "\t-u num  : target core utilization, 0 < num <= 1; ignored when the\n"
+                    "\t          core is pinned with -w and -y [default = %.2f]\n", Def.Util );
     Abc_Print( -2, "\t-a num  : core height / width [default = %.2f]\n", Def.Aspect );
+    Abc_Print( -2, "\t-w num  : core width in um; with -y this is the core instead of\n"
+                    "\t          the one derived from the area and -u [default = %.2f,\n"
+                    "\t          derive it]\n", Def.CoreW );
+    Abc_Print( -2, "\t-y num  : core height in um [default = %.2f, derive it]\n", Def.CoreH );
+    Abc_Print( -2, "\t-A      : size the core by every alternative that is placed,\n"
+                    "\t          not by the selected alternative of every class.\n"
+                    "\t          It is the floorplan of a flow that cannot select\n"
+                    "\t          and it only differs from the default when the\n"
+                    "\t          placement moves more than the representatives\n"
+                    "\t          [default = no]\n" );
     Abc_Print( -2, "\t-i num  : conjugate-gradient iterations [default = %d]\n", Def.nIterCG );
     Abc_Print( -2, "\t-s num  : nonlinear placement iterations [default = %d]\n", Def.nIterNest );
     Abc_Print( -2, "\t-o num  : density overflow at which to stop [default = %.2f]\n", Def.StopOverflow );
@@ -1665,6 +1775,19 @@ usage:
     Abc_Print( -2, "\t-r num  : selection rounds of -c [default = %d]\n", Def.nChoiceRounds );
     Abc_Print( -2, "\t-t num  : relative cost gain that makes a new alternative worth\n" );
     Abc_Print( -2, "\t          migrating to [default = %.3f]\n", Def.ChoiceTol );
+    Abc_Print( -2, "\t-D      : with -c, keep every alternative of the choice graph in\n"
+                    "\t          the global placement; the selection still decides the\n"
+                    "\t          netlist that is scored, but it no longer decides which\n"
+                    "\t          cells the placement moves.  It is the dense control\n"
+                    "\t          that separates the placement model from the selection\n"
+                    "\t          [default = no]\n" );
+    Abc_Print( -2, "\t-R      : reduce the network to the selection of the placer\n"
+                    "\t          before placing it: the cones of the alternatives that\n"
+                    "\t          are not selected are deleted and their fanouts follow\n"
+                    "\t          the selected member, so the placement is choice-blind\n"
+                    "\t          and still has the cells of the sparse placement.  The\n"
+                    "\t          network bound by &phys_bind is replaced and bound again\n"
+                    "\t          [default = no]\n" );
     Abc_Print( -2, "\t-l      : legalize the placement into standard-cell rows; by\n" );
     Abc_Print( -2, "\t          default the spread placement is kept, so the cells may\n" );
     Abc_Print( -2, "\t          overlap and are not aligned to sites [default = no]\n" );
@@ -2118,7 +2241,7 @@ int Abc_CommandPhysMap( Abc_Frame_t * pAbc, int argc, char ** argv )
             Abc_Print( 1, "No physical-synthesis session; the mapped network is left as is.\n" );
         return 0;
     }
-    return Abc_PhysBind( pAbc, NULL, fVerbose );
+    return Abc_PhysBind( pAbc, NULL, NULL, fVerbose );
 
 usage:
     Abc_Print( -2, "usage: &phys_map [-K num] [-C num] [-F num] [-E num] [-D num] [-R num]\n" );

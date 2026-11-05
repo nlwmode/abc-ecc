@@ -405,6 +405,115 @@ int Phys_ChoiceResolveFanin( Phys_Man_t * p, int iSinkObj, int iLit )
     return Abc_Var2Lit( iSel, fCompl );
 }
 
+/* Duplicates the network with the alternatives that are not selected
+   deleted: a node of an inactive cone is replaced by the selected member
+   of its class, and every fanin that refers to such a node is redirected
+   the way Phys_ChoiceResolveFanin reads it.  The result is the netlist
+   the selection describes -- what a flow that cannot select would see
+   after the choice graph is reduced -- so its cells are, one for one,
+   the active nodes of the placement view.
+
+   The traversal starts from every active node in topological order, so
+   the duplicate is in topological order even when a redirected fanin
+   points at a member with a larger object id than its sink, and the
+   active nodes that no output reaches are kept as well: the placement
+   places them, so the two netlists are only comparable cell for cell if
+   the duplicate has them too.  The nodes are appended without structural
+   hashing, so the cell count is the count of active nodes. */
+static void Phys_ChoiceReduce_rec( Gia_Man_t * pNew, Gia_Man_t * p, Phys_Man_t * pMan,
+                                   Gia_Obj_t * pObj, Vec_Int_t * vMap )
+{
+    int iObj = Gia_ObjId( p, pObj );
+    int iLit0, iLit1;
+    Gia_Obj_t * pFan0, * pFan1;
+    if ( !Phys_ChoiceObjActive( pMan, iObj ) )
+    {
+        /* a sink outside the class of a member that is not selected; the
+           phase difference is part of the literal the function returns */
+        int iSel = Phys_ChoiceResolveFanin( pMan, -1, 2 * iObj );
+        Gia_Obj_t * pSel = Gia_ManObj( p, Abc_Lit2Var(iSel) );
+        Phys_ChoiceReduce_rec( pNew, p, pMan, pSel, vMap );
+        pObj->Value = Abc_LitNotCond( pSel->Value, Abc_LitIsCompl(iSel) );
+        return;
+    }
+    if ( ~pObj->Value )
+        return;
+    assert( Gia_ObjIsAnd(pObj) );
+    if ( Gia_ObjIsBuf(pObj) )
+    {
+        iLit0 = Phys_ChoiceResolveFanin( pMan, iObj, Gia_ObjFaninLit0p(p, pObj) );
+        pFan0 = Gia_ManObj( p, Abc_Lit2Var(iLit0) );
+        Phys_ChoiceReduce_rec( pNew, p, pMan, pFan0, vMap );
+        pObj->Value = Gia_ManAppendBuf( pNew, Abc_LitNotCond( pFan0->Value, Abc_LitIsCompl(iLit0) ) );
+    }
+    else
+    {
+        iLit0 = Phys_ChoiceResolveFanin( pMan, iObj, Gia_ObjFaninLit0p(p, pObj) );
+        iLit1 = Phys_ChoiceResolveFanin( pMan, iObj, Gia_ObjFaninLit1p(p, pObj) );
+        pFan0 = Gia_ManObj( p, Abc_Lit2Var(iLit0) );
+        pFan1 = Gia_ManObj( p, Abc_Lit2Var(iLit1) );
+        Phys_ChoiceReduce_rec( pNew, p, pMan, pFan0, vMap );
+        Phys_ChoiceReduce_rec( pNew, p, pMan, pFan1, vMap );
+        iLit0 = Abc_LitNotCond( pFan0->Value, Abc_LitIsCompl(iLit0) );
+        iLit1 = Abc_LitNotCond( pFan1->Value, Abc_LitIsCompl(iLit1) );
+        /* the redirection can make the two fanins of a node the same literal */
+        if ( iLit0 == iLit1 )
+            pObj->Value = Gia_ManAppendBuf( pNew, iLit0 );
+        else if ( iLit0 == Abc_LitNot(iLit1) )
+            pObj->Value = 0;
+        else
+            pObj->Value = Gia_ManAppendAnd( pNew, iLit0, iLit1 );
+    }
+    if ( vMap != NULL && Abc_Lit2Var(pObj->Value) > 0 )
+        Vec_IntWriteEntry( vMap, Abc_Lit2Var(pObj->Value), iObj );
+}
+
+/* vMap, when given, receives the object of the original network every
+   node of the duplicate was built from, so that the binding of the
+   choice graph can be carried over to the reduced netlist */
+Gia_Man_t * Phys_ChoiceReduce( Phys_Man_t * p, Gia_Man_t * pGia, Vec_Int_t * vMap )
+{
+    Gia_Man_t * pNew;
+    Gia_Obj_t * pObj;
+    int i;
+    if ( p == NULL || pGia == NULL || !p->fHasChoices )
+        return NULL;
+    if ( vMap != NULL )
+        Vec_IntFill( vMap, Gia_ManObjNum(pGia), -1 );
+    pNew = Gia_ManStart( Gia_ManObjNum(pGia) );
+    pNew->pName = Abc_UtilStrsav( pGia->pName );
+    pNew->pSpec = Abc_UtilStrsav( pGia->pSpec );
+    Gia_ManFillValue( pGia );
+    Gia_ManConst0(pGia)->Value = 0;
+    Gia_ManForEachCi( pGia, pObj, i )
+    {
+        pObj->Value = Gia_ManAppendCi( pNew );
+        if ( vMap != NULL )
+            Vec_IntWriteEntry( vMap, Abc_Lit2Var(pObj->Value), i );
+    }
+    /* Every active node is materialized, including the ones no output
+       reaches: the placement's active set is the cone-based one, so a
+       class whose only consumers are alternatives that were not selected
+       stays in it (its cones are "orphans" of the selected netlist).  The
+       sweep in topological order appends them, and a redirection to a
+       selected member of a larger id is resolved by the recursion. */
+    for ( i = 1; i < Gia_ManObjNum(pGia); i++ )
+    {
+        pObj = Gia_ManObj( pGia, i );
+        if ( Gia_ObjIsAnd(pObj) && !~pObj->Value && Phys_ChoiceObjActive( p, i ) )
+            Phys_ChoiceReduce_rec( pNew, pGia, p, pObj, vMap );
+    }
+    Gia_ManForEachCo( pGia, pObj, i )
+    {
+        int iLit = Phys_ChoiceResolveFanin( p, Gia_ObjId(pGia, pObj), Gia_ObjFaninLit0p(pGia, pObj) );
+        Gia_Obj_t * pFan = Gia_ManObj( pGia, Abc_Lit2Var(iLit) );
+        Phys_ChoiceReduce_rec( pNew, pGia, p, pFan, vMap );
+        pObj->Value = Gia_ManAppendCo( pNew, Abc_LitNotCond( pFan->Value, Abc_LitIsCompl(iLit) ) );
+    }
+    Gia_ManSetRegNum( pNew, Gia_ManRegNum(pGia) );
+    return pNew;
+}
+
 void Phys_ChoicePrint( Phys_Man_t * p, int fVerbose )
 {
     int c, a, nAlts = 0, nNodes = 0, nInactive = 0, nSel = 0;

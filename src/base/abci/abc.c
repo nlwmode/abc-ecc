@@ -50352,11 +50352,13 @@ int Abc_CommandAbc9Dch( Abc_Frame_t * pAbc, int argc, char ** argv )
     extern Gia_Man_t * Gia_ManEquivReduce2( Gia_Man_t * p, int fRandom );
     Gia_Man_t * pTemp;
     Dch_Pars_t Pars, * pPars = &Pars;
-    int c, fMinLevel = 0, fEquiv = 0, fRandom = 0;
+    int c, fMinLevel = 0, fEquiv = 0, fRandom = 0, fReprOnly = 0;
     // set defaults
     Dch_ManSetDefaultParams( pPars );
     Extra_UtilGetoptReset();
-    while ( ( c = Extra_UtilGetopt( argc, argv, "WCSsptfremngcxyvh" ) ) != EOF )
+    /* -R is upper case on purpose: it is not a choice-computation knob
+       but the reduction that deletes the choices afterwards */
+    while ( ( c = Extra_UtilGetopt( argc, argv, "WCSRsptfremngcxyvh" ) ) != EOF )
     {
         switch ( c )
         {
@@ -50411,6 +50413,9 @@ int Abc_CommandAbc9Dch( Abc_Frame_t * pAbc, int argc, char ** argv )
         case 'e':
             fEquiv ^= 1;
             break;
+        case 'R':
+            fReprOnly ^= 1;
+            break;
         case 'm':
             fMinLevel ^= 1;
             break;
@@ -50448,6 +50453,21 @@ int Abc_CommandAbc9Dch( Abc_Frame_t * pAbc, int argc, char ** argv )
         Abc_Print( -1, "Abc_CommandAbc9Dch(): This command does not work with barrier buffers.\n" );
         return 1;
     }
+    /* -R does not compute choices: it removes the ones the network already
+       has.  The duplicate keeps only the representative cone of every
+       class, so the result is the netlist a choice-blind flow would see
+       -- the control for what the alternatives are worth */
+    if ( fReprOnly )
+    {
+        pTemp = Gia_ManEquivReduce( pAbc->pGia, 1, 0, 0, 0 );
+        if ( pTemp == NULL )
+        {
+            Abc_Print( -1, "Abc_CommandAbc9Dch(): The network has no choices to reduce.\n" );
+            return 1;
+        }
+        Abc_FrameUpdateGia( pAbc, pTemp );
+        return 0;
+    }
     if ( fEquiv )
     {
         Aig_Man_t * pNew = Gia_ManToAigSimple( pAbc->pGia );
@@ -50468,8 +50488,11 @@ int Abc_CommandAbc9Dch( Abc_Frame_t * pAbc, int argc, char ** argv )
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: &dch [-WCS num] [-sptfremngcxyvh]\n" );
+    Abc_Print( -2, "usage: &dch [-WCS num] [-Rsptfremngcxyvh]\n" );
     Abc_Print( -2, "\t         computes structural choices using a new approach\n" );
+    Abc_Print( -2, "\t-R     : do not compute choices; reduce the network to the\n"
+                    "\t         representative cone of the choices it already has,\n"
+                    "\t         which is the network a choice-blind flow sees\n" );
     Abc_Print( -2, "\t-W num : the max number of simulation words [default = %d]\n", pPars->nWords );
     Abc_Print( -2, "\t-C num : the max number of conflicts at a node [default = %d]\n", pPars->nBTLimit );
     Abc_Print( -2, "\t-S num : the max number of SAT variables [default = %d]\n", pPars->nSatVarMax );

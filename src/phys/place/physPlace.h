@@ -46,6 +46,13 @@ typedef struct Phys_PlacePars_t_
 {
     float Util;         /* target core utilization                 */
     float Aspect;       /* core height / width                     */
+    float CoreW;        /* core width in um, 0 = derive from the area */
+    float CoreH;        /* core height in um, 0 = derive from the area */
+    int   fCoreAll;     /* 0 = size the core by the selected alternative
+                           of every class (the representative subgraph),
+                           1 = by every alternative the placement moves,
+                           which is what a flow with no notion of a
+                           selection does                           */
     int   nIterCG;      /* conjugate-gradient iterations           */
     int   nIterNest;    /* nonlinear placement iterations          */
     float StopOverflow; /* density overflow at which to stop       */
@@ -66,6 +73,12 @@ typedef struct Phys_PlacePars_t_
     int   nChoiceRounds;/* selection rounds of the descent ("-r")     */
     float ChoiceTol;    /* relative cost gain that makes a new
                            alternative worth migrating to            */
+    int   fPlaceAlts;   /* 1 = the selection rounds decide and score the
+                           netlist, but the global placement still moves
+                           every alternative of the choice graph ("-D").
+                           Together with -c this is the dense control:
+                           it separates the placement model from the
+                           selection rule                               */
     int   fVerbose;
 } Phys_PlacePars_t;
 

@@ -175,6 +175,12 @@ extern int          Phys_ChoiceObjClass( Phys_Man_t * p, int iObj );
 extern int          Phys_ChoiceObjAlt( Phys_Man_t * p, int iObj );
 extern int          Phys_ChoiceObjActive( Phys_Man_t * p, int iObj );
 extern int          Phys_ChoiceResolveFanin( Phys_Man_t * p, int iSinkObj, int iLit );
+/* The network with the selection applied: the cones of the alternatives
+   that are not selected are deleted and their fanouts are redirected to
+   the selected member.  It is the netlist the sparse placement describes,
+   materialized, so that a flow which cannot select can be given exactly
+   the same cells. */
+extern Gia_Man_t *  Phys_ChoiceReduce( Phys_Man_t * p, Gia_Man_t * pGia, Vec_Int_t * vMap );
 extern void         Phys_ChoicePrint( Phys_Man_t * p, int fVerbose );
 
 ABC_NAMESPACE_HEADER_END

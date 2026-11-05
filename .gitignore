@@ -74,7 +74,13 @@ phys_ws/
 phys_steiner_ws/
 # choice-placement comparison workspace (test/phys_choice_exp.sh)
 phys_choice_ws/
+# post-mapping netlist workspace (test/phys_map_exp.sh)
+phys_map_ws/
+# choice-placer for physical-aware mapping workspace (test/phys_choiceplacer.sh)
+phys_choiceplacer_ws/
 # unit-RC-from-layer check workspace (test/phys_signal_rc.sh)
 phys_rc_ws/
+# step-2 placement-arm experiment workspace (test/phys_step2_arms.sh)
+phys_step2_ws/
 # archive of the measurement artifacts copied from /tmp (see phys_exp/README.md)
 phys_exp/
