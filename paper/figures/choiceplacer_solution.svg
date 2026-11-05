@@ -1,0 +1,268 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="600"
+     viewBox="0 0 980 600"
+     font-family="Helvetica Neue, Helvetica, Arial, DejaVu Sans, sans-serif">
+  <title>Choice-aware placement for physical-aware technology mapping</title>
+  <desc>
+    (a) The flow: a choice graph enters a choice-aware physical model (bind, select,
+    timing) whose data -- coordinates, capacitance, arrival, required time -- is what the
+    mapper ranks its cuts by. (b) The selection is a block coordinate descent: place the
+    selected alternatives globally, score the other alternatives in place at their class
+    anchor, switch the classes that improve, and re-place. (c) Pre-map estimate and
+    delivered cell area, both relative to the choice placer: the choice-blind flow
+    over-estimates the area it delivers, the representative-only flow under-estimates it,
+    and only the choice-aware model is consistent with the netlist it produces.
+  </desc>
+
+  <defs>
+    <marker id="arrowSlate" markerWidth="8" markerHeight="7" refX="7" refY="3.5"
+            orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L7,3.5 L0,7 z" fill="#334155"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="8" markerHeight="7" refX="7" refY="3.5"
+            orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L7,3.5 L0,7 z" fill="#1f4e79"/>
+    </marker>
+  </defs>
+
+  <rect width="980" height="600" fill="#ffffff"/>
+
+  <!-- ============================ (a) the flow ============================ -->
+  <g id="panel-a">
+    <text x="20" y="24" font-size="14" font-weight="700" fill="#0f172a">(a) The flow</text>
+
+    <!-- 1 choice graph -->
+    <rect x="20" y="36" width="340" height="96" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.4"/>
+    <text x="32" y="56" font-size="11.5" font-weight="700" fill="#0f172a">1 · Choice graph</text>
+    <text x="32" y="71" font-size="9.5" fill="#475569">&amp;st; &amp;dch — classes of equivalent alternatives</text>
+
+    <rect x="32" y="82" width="8" height="41" rx="4" fill="#e2e8f0" stroke="#64748b" stroke-width="1.1"/>
+    <g stroke="#94a3b8" stroke-width="1.1">
+      <line x1="40" y1="87.5" x2="52" y2="87.5"/>
+      <line x1="40" y1="102.5" x2="52" y2="102.5"/>
+      <line x1="40" y1="117.5" x2="52" y2="117.5"/>
+    </g>
+
+    <rect x="52" y="82" width="78" height="11" rx="2.5" fill="#dbe9f6" stroke="#1f4e79" stroke-width="1.5"/>
+    <rect x="52" y="97" width="78" height="11" rx="2.5" fill="#f4f5f7" stroke="#94a3b8" stroke-width="1.1" stroke-dasharray="4 3"/>
+    <rect x="52" y="112" width="78" height="11" rx="2.5" fill="#f4f5f7" stroke="#94a3b8" stroke-width="1.1" stroke-dasharray="4 3"/>
+    <text x="126" y="90.5" font-size="8.5" text-anchor="end" fill="#1f4e79" font-weight="600">A<tspan dy="2.5" font-size="7">1</tspan></text>
+    <text x="126" y="105.5" font-size="8.5" text-anchor="end" fill="#64748b">A<tspan dy="2.5" font-size="7">2</tspan></text>
+    <text x="126" y="120.5" font-size="8.5" text-anchor="end" fill="#64748b">A<tspan dy="2.5" font-size="7">3</tspan></text>
+
+    <g stroke="#1f4e79" stroke-width="1.2" fill="none">
+      <line x1="130" y1="87.5" x2="164" y2="101"/>
+    </g>
+    <g stroke="#94a3b8" stroke-width="1.1" fill="none" stroke-dasharray="4 3">
+      <line x1="130" y1="102.5" x2="164" y2="103"/>
+      <line x1="130" y1="117.5" x2="164" y2="105"/>
+    </g>
+    <circle cx="168" cy="103" r="6.5" fill="#fffbeb" stroke="#d97706" stroke-width="1.6"/>
+    <circle cx="168" cy="103" r="2.4" fill="#d97706"/>
+    <line x1="174.5" y1="103" x2="196" y2="103" stroke="#334155" stroke-width="1.5"/>
+    <circle cx="204" cy="103" r="7" fill="#ffffff" stroke="#334155" stroke-width="1.5"/>
+    <text x="204" y="106.5" font-size="9" font-style="italic" text-anchor="middle" fill="#0f172a">y</text>
+    <text x="216" y="106" font-size="8.5" fill="#64748b">fanouts</text>
+
+    <line x1="190" y1="132" x2="190" y2="148" stroke="#334155" stroke-width="1.6" marker-end="url(#arrowSlate)"/>
+
+    <!-- 2 choice-aware physical model -->
+    <rect x="20" y="150" width="340" height="110" rx="6" fill="#dbe9f6" stroke="#1f4e79" stroke-width="1.8"/>
+    <text x="32" y="170" font-size="11.5" font-weight="700" fill="#1f4e79">2 · Choice-aware physical model</text>
+    <text x="32" y="186" font-size="9.5" fill="#1f4e79">placement and timing of the selected netlist</text>
+    <text x="32" y="207" font-size="9.5" fill="#0f172a">&amp;phys_bind<tspan fill="#475569"> — the virtual netlist</tspan></text>
+    <text x="32" y="225" font-size="9.5" fill="#0f172a">&amp;phys_place -c -r R<tspan fill="#475569"> — the selection</tspan></text>
+    <text x="32" y="243" font-size="9.5" fill="#0f172a">&amp;phys_sta -C<tspan fill="#475569"> — timing of the selection</tspan></text>
+
+    <line x1="190" y1="260" x2="190" y2="276" stroke="#334155" stroke-width="1.6" marker-end="url(#arrowSlate)"/>
+
+    <!-- the physical model handed to the mapper -->
+    <rect x="20" y="278" width="340" height="62" rx="6" fill="#fffbeb" stroke="#d97706" stroke-width="1.5"/>
+    <text x="32" y="299" font-size="10.5" font-weight="700" fill="#b45309">physical model Jf_Phys_t</text>
+    <text x="32" y="317" font-size="9.5" fill="#475569">x, y · net capacitance · arrival · required time</text>
+    <text x="32" y="332" font-size="8.5" fill="#94a3b8">the data the mapper ranks its cuts by</text>
+
+    <line x1="190" y1="340" x2="190" y2="356" stroke="#334155" stroke-width="1.6" marker-end="url(#arrowSlate)"/>
+
+    <!-- 3 map and close -->
+    <rect x="20" y="358" width="340" height="84" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.4"/>
+    <text x="32" y="378" font-size="11.5" font-weight="700" fill="#0f172a">3 · Map and close</text>
+    <text x="32" y="397" font-size="9.5" fill="#0f172a">&amp;phys_map<tspan fill="#475569"> — ranks every cut by the model</tspan></text>
+    <text x="32" y="415" font-size="9.5" fill="#0f172a">&amp;phys_place<tspan fill="#475569"> — places the delivered netlist</tspan></text>
+    <text x="32" y="432" font-size="9.5" fill="#475569">the selection itself is not passed on</text>
+
+    <line x1="190" y1="442" x2="190" y2="460" stroke="#334155" stroke-width="1.6" marker-end="url(#arrowSlate)"/>
+
+    <rect x="20" y="462" width="340" height="62" rx="6" fill="#e2e8f0" stroke="#64748b" stroke-width="1.4"/>
+    <text x="32" y="483" font-size="11.5" font-weight="700" fill="#0f172a">delivered netlist</text>
+    <text x="32" y="501" font-size="9.5" fill="#475569">one implementation per class</text>
+  </g>
+
+  <!-- ==================== (b) selection: block coordinate descent ==================== -->
+  <g id="panel-b">
+    <text x="384" y="24" font-size="14" font-weight="700" fill="#0f172a">
+      (b) Block coordinate descent
+    </text>
+
+    <!-- step 1 -->
+    <rect x="384" y="40" width="288" height="60" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.3"/>
+    <circle cx="402" cy="58" r="9" fill="#1f4e79"/>
+    <text x="402" y="61.5" font-size="9.5" font-weight="700" text-anchor="middle" fill="#ffffff">1</text>
+    <text x="418" y="56" font-size="10.5" font-weight="700" fill="#0f172a">place the selection</text>
+    <text x="418" y="73" font-size="9" fill="#475569">global CG + Nesterov; only the selected</text>
+    <text x="418" y="86" font-size="9" fill="#475569">alternative enters density and nets</text>
+
+    <line x1="528" y1="100" x2="528" y2="110" stroke="#334155" stroke-width="1.5" marker-end="url(#arrowSlate)"/>
+
+    <!-- step 2 -->
+    <rect x="384" y="112" width="288" height="60" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.3"/>
+    <circle cx="402" cy="130" r="9" fill="#1f4e79"/>
+    <text x="402" y="133.5" font-size="9.5" font-weight="700" text-anchor="middle" fill="#ffffff">2</text>
+    <text x="418" y="128" font-size="10.5" font-weight="700" fill="#0f172a">score the alternatives</text>
+    <text x="418" y="145" font-size="9" fill="#475569">seed at the class output anchor, local</text>
+    <text x="418" y="158" font-size="9" fill="#475569">re-place, exact HPWL of the cone</text>
+
+    <line x1="528" y1="172" x2="528" y2="182" stroke="#334155" stroke-width="1.5" marker-end="url(#arrowSlate)"/>
+
+    <!-- step 3 -->
+    <rect x="384" y="184" width="288" height="60" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.3"/>
+    <circle cx="402" cy="202" r="9" fill="#1f4e79"/>
+    <text x="402" y="205.5" font-size="9.5" font-weight="700" text-anchor="middle" fill="#ffffff">3</text>
+    <text x="418" y="200" font-size="10.5" font-weight="700" fill="#0f172a">switch a class</text>
+    <text x="418" y="217" font-size="9" fill="#475569">when score &lt; (1 − τ) × incumbent</text>
+    <text x="418" y="230" font-size="9" fill="#475569">τ = 0.01 by default</text>
+
+    <line x1="528" y1="244" x2="528" y2="254" stroke="#334155" stroke-width="1.5" marker-end="url(#arrowSlate)"/>
+
+    <!-- step 4 -->
+    <rect x="384" y="256" width="288" height="60" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.3"/>
+    <circle cx="402" cy="274" r="9" fill="#1f4e79"/>
+    <text x="402" y="277.5" font-size="9.5" font-weight="700" text-anchor="middle" fill="#ffffff">4</text>
+    <text x="418" y="272" font-size="10.5" font-weight="700" fill="#0f172a">re-place and iterate</text>
+    <text x="418" y="289" font-size="9" fill="#475569">the new selection is placed globally;</text>
+    <text x="418" y="302" font-size="9" fill="#475569">repeat for R rounds (R = 3)</text>
+
+    <!-- return edge -->
+    <path d="M672,286 C696,286 696,70 676,70" fill="none" stroke="#1f4e79" stroke-width="1.6"
+          marker-end="url(#arrowBlue)"/>
+    <text x="706" y="180" font-size="8.5" fill="#1f4e79" text-anchor="middle"
+          transform="rotate(90 706 180)">R rounds</text>
+
+    <!-- what the rounds see in the core -->
+    <rect x="384" y="340" width="288" height="128" rx="5" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.3"/>
+    <text x="392" y="354" font-size="8.5" fill="#94a3b8">core</text>
+    <g stroke="#e2e8f0" stroke-width="1">
+      <line x1="456" y1="348" x2="456" y2="462"/>
+      <line x1="528" y1="348" x2="528" y2="462"/>
+      <line x1="600" y1="348" x2="600" y2="462"/>
+      <line x1="390" y1="376" x2="664" y2="376"/>
+      <line x1="390" y1="404" x2="664" y2="404"/>
+      <line x1="390" y1="432" x2="664" y2="432"/>
+    </g>
+
+    <!-- placed neighbours -->
+    <g fill="#e2e8f0" stroke="#94a3b8" stroke-width="1">
+      <rect x="396" y="356" width="20" height="11" rx="2"/>
+      <rect x="620" y="356" width="20" height="11" rx="2"/>
+      <rect x="402" y="438" width="20" height="11" rx="2"/>
+      <rect x="636" y="434" width="20" height="11" rx="2"/>
+      <rect x="600" y="384" width="20" height="11" rx="2"/>
+    </g>
+    <g stroke="#cbd5e1" stroke-width="1">
+      <line x1="406" y1="367" x2="470" y2="392"/>
+      <line x1="630" y1="367" x2="570" y2="400"/>
+      <line x1="412" y1="438" x2="470" y2="418"/>
+      <line x1="646" y1="434" x2="590" y2="416"/>
+    </g>
+
+    <!-- selected alternative: solid -->
+    <g fill="#dbe9f6" stroke="#1f4e79" stroke-width="1.6">
+      <rect x="466" y="380" width="24" height="12" rx="3"/>
+      <rect x="500" y="408" width="24" height="12" rx="3"/>
+      <rect x="556" y="376" width="24" height="12" rx="3"/>
+    </g>
+    <g stroke="#1f4e79" stroke-width="1.2" fill="none">
+      <line x1="478" y1="386" x2="512" y2="414"/>
+      <line x1="512" y1="414" x2="568" y2="382"/>
+      <line x1="478" y1="386" x2="568" y2="382"/>
+    </g>
+
+    <!-- alternatives of the same classes: scored in place -->
+    <g fill="#f4f5f7" stroke="#94a3b8" stroke-width="1.1" stroke-dasharray="4 3">
+      <rect x="512" y="356" width="24" height="12" rx="3"/>
+      <rect x="560" y="410" width="24" height="12" rx="3"/>
+      <rect x="600" y="436" width="24" height="12" rx="3"/>
+    </g>
+    <text x="524" y="351" font-size="8" fill="#64748b">A<tspan dy="2" font-size="7">2</tspan></text>
+    <text x="572" y="405" font-size="8" fill="#64748b">A<tspan dy="2" font-size="7">3</tspan></text>
+
+    <circle cx="540" cy="420" r="6" fill="#fffbeb" stroke="#d97706" stroke-width="1.5"/>
+    <circle cx="540" cy="420" r="2.2" fill="#d97706"/>
+
+    <text x="528" y="486" font-size="9" text-anchor="middle" fill="#1f4e79">
+      only the selected alternative enters the placement;
+    </text>
+    <text x="528" y="500" font-size="9" text-anchor="middle" fill="#64748b">
+      the others are scored in place at the class anchor
+    </text>
+  </g>
+
+  <!-- ==================== (c) estimate vs delivered ==================== -->
+  <g id="panel-c">
+    <text x="712" y="24" font-size="14" font-weight="700" fill="#0f172a">(c) What the model predicts</text>
+
+    <text x="748" y="64" font-size="8.5" fill="#475569">cell area, relative to</text>
+    <text x="748" y="76" font-size="8.5" fill="#475569">the choice placer (= 1.0)</text>
+
+    <!-- plot frame -->
+    <g stroke="#e2e8f0" stroke-width="1">
+      <line x1="748" y1="342.8" x2="958" y2="342.8"/>
+      <line x1="748" y1="148.4" x2="958" y2="148.4"/>
+    </g>
+    <line x1="748" y1="90" x2="748" y2="440" stroke="#94a3b8" stroke-width="1.2"/>
+    <line x1="748" y1="440" x2="966" y2="440" stroke="#94a3b8" stroke-width="1.2"/>
+    <g font-size="8.5" fill="#64748b" text-anchor="end">
+      <text x="742" y="443">0</text>
+      <text x="742" y="345.8">0.5</text>
+      <text x="742" y="248.6">1.0</text>
+      <text x="742" y="151.4">1.5</text>
+    </g>
+    <line x1="748" y1="245.6" x2="958" y2="245.6" stroke="#94a3b8" stroke-width="1.1"
+          stroke-dasharray="5 3"/>
+
+    <!-- choice-blind -->
+    <rect x="756" y="123.1" width="26" height="316.9" fill="#cbd5e1" stroke="#94a3b8" stroke-width="1"/>
+    <rect x="788" y="239.8" width="26" height="200.2" fill="#1f4e79" stroke="#1f4e79" stroke-width="1"/>
+    <text x="769" y="117" font-size="9.5" text-anchor="middle" fill="#334155">1.63</text>
+    <text x="801" y="234" font-size="9.5" text-anchor="middle" fill="#1f4e79">1.03</text>
+
+    <!-- choice placer -->
+    <rect x="830" y="245.6" width="26" height="194.4" fill="#cbd5e1" stroke="#94a3b8" stroke-width="1"/>
+    <rect x="862" y="245.6" width="26" height="194.4" fill="#1f4e79" stroke="#1f4e79" stroke-width="1"/>
+    <text x="843" y="239.6" font-size="9.5" text-anchor="middle" fill="#334155">1.00</text>
+    <text x="875" y="239.6" font-size="9.5" text-anchor="middle" fill="#1f4e79">1.00</text>
+
+    <!-- representative only -->
+    <rect x="904" y="265.0" width="26" height="175.0" fill="#cbd5e1" stroke="#94a3b8" stroke-width="1"/>
+    <rect x="936" y="235.9" width="26" height="204.1" fill="#1f4e79" stroke="#1f4e79" stroke-width="1"/>
+    <text x="917" y="259" font-size="9.5" text-anchor="middle" fill="#334155">0.90</text>
+    <text x="949" y="230" font-size="9.5" text-anchor="middle" fill="#1f4e79">1.05</text>
+
+    <!-- group labels -->
+    <text x="785" y="458" font-size="9" text-anchor="middle" fill="#0f172a">choice-blind</text>
+    <text x="785" y="471" font-size="8" text-anchor="middle" fill="#94a3b8">all alternatives</text>
+    <text x="859" y="458" font-size="9" text-anchor="middle" fill="#1f4e79" font-weight="600">choice placer</text>
+    <text x="859" y="471" font-size="8" text-anchor="middle" fill="#94a3b8">selection</text>
+    <text x="933" y="458" font-size="9" text-anchor="middle" fill="#0f172a">repr only</text>
+    <text x="933" y="471" font-size="8" text-anchor="middle" fill="#94a3b8">no alternatives</text>
+
+    <!-- legend -->
+    <rect x="756" y="488" width="12" height="10" fill="#cbd5e1" stroke="#94a3b8" stroke-width="1"/>
+    <text x="774" y="497" font-size="9" fill="#475569">pre-map estimate</text>
+    <rect x="756" y="505" width="12" height="10" fill="#1f4e79" stroke="#1f4e79" stroke-width="1"/>
+    <text x="774" y="514" font-size="9" fill="#475569">delivered netlist</text>
+
+    <text x="712" y="540" font-size="9" fill="#475569">only the choice placer's estimate</text>
+    <text x="712" y="554" font-size="9" fill="#475569">agrees with the netlist it builds</text>
+  </g>
+</svg>

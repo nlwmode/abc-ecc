@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="680"
+     viewBox="0 0 1000 680"
+     font-family="Helvetica Neue, Helvetica, Arial, DejaVu Sans, sans-serif">
+  <title>How the physical information of one choice class migrates between its subgraphs</title>
+  <desc>
+    (a) The alternatives of a class share their fanins and their output but differ in the
+    cells they contain, so n_a, the size of an alternative, is a property of the subgraph.
+    (b) The anchor of a class is the centroid of the placed cells of the selected cone;
+    a candidate is seeded as a ceil(sqrt(n_a))-column grid of one site pitch per cell around
+    it, so an alternative of a different size occupies a different footprint. (c) When the
+    class switches, the coordinates, the area, the nets and the anchor of the class all move
+    to the new subgraph; with alternatives of equal size the footprint and the area are
+    unchanged, with alternatives of different size they are not, and the selection cost has
+    no area term at all.
+  </desc>
+
+  <defs>
+    <marker id="arrowSlate" markerWidth="8" markerHeight="7" refX="7" refY="3.5"
+            orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L7,3.5 L0,7 z" fill="#334155"/>
+    </marker>
+  </defs>
+
+  <rect width="1000" height="680" fill="#ffffff"/>
+
+  <!-- ==================== (a) the class ==================== -->
+  <g id="panel-a">
+    <text x="20" y="24" font-size="14" font-weight="700" fill="#0f172a">
+      (a) One class, k subgraphs of size n<tspan dy="3" font-size="10">a</tspan>
+    </text>
+
+    <!-- shared fanins -->
+    <rect x="44" y="66" width="8" height="210" rx="4" fill="#e2e8f0" stroke="#64748b" stroke-width="1.1"/>
+    <text x="48" y="296" font-size="8" text-anchor="middle" fill="#64748b">F</text>
+    <g stroke="#94a3b8" stroke-width="1.1">
+      <line x1="52" y1="87" x2="60" y2="87"/>
+      <line x1="52" y1="153" x2="60" y2="153"/>
+      <line x1="52" y1="235" x2="60" y2="235"/>
+    </g>
+
+    <!-- A1, n = 1 -->
+    <rect x="60" y="72" width="50" height="30" rx="4" fill="#f8fafc" stroke="#475569" stroke-width="1.3"/>
+    <rect x="76" y="82" width="18" height="10" rx="2" fill="#f4f5f7" stroke="#64748b" stroke-width="1.2"/>
+    <text x="60" y="116" font-size="9" fill="#475569">A<tspan dy="2.5" font-size="7.5">1</tspan><tspan dy="-2.5" dx="2.5">·&#160;n&#160;=&#160;1</tspan></text>
+
+    <!-- A2, n = 5 -->
+    <rect x="60" y="130" width="82" height="46" rx="4" fill="#f8fafc" stroke="#475569" stroke-width="1.3"/>
+    <g fill="#f4f5f7" stroke="#64748b" stroke-width="1.2">
+      <rect x="68" y="138" width="18" height="10" rx="2"/>
+      <rect x="90" y="138" width="18" height="10" rx="2"/>
+      <rect x="112" y="138" width="18" height="10" rx="2"/>
+      <rect x="68" y="154" width="18" height="10" rx="2"/>
+      <rect x="90" y="154" width="18" height="10" rx="2"/>
+    </g>
+    <text x="60" y="190" font-size="9" fill="#475569">A<tspan dy="2.5" font-size="7.5">2</tspan><tspan dy="-2.5" dx="2.5">·&#160;n&#160;=&#160;5</tspan></text>
+
+    <!-- A3, n = 11 -->
+    <rect x="60" y="204" width="104" height="62" rx="4" fill="#f8fafc" stroke="#475569" stroke-width="1.3"/>
+    <g fill="#f4f5f7" stroke="#64748b" stroke-width="1.2">
+      <rect x="68" y="212" width="18" height="10" rx="2"/>
+      <rect x="90" y="212" width="18" height="10" rx="2"/>
+      <rect x="112" y="212" width="18" height="10" rx="2"/>
+      <rect x="134" y="212" width="18" height="10" rx="2"/>
+      <rect x="68" y="228" width="18" height="10" rx="2"/>
+      <rect x="90" y="228" width="18" height="10" rx="2"/>
+      <rect x="112" y="228" width="18" height="10" rx="2"/>
+      <rect x="134" y="228" width="18" height="10" rx="2"/>
+      <rect x="68" y="244" width="18" height="10" rx="2"/>
+      <rect x="90" y="244" width="18" height="10" rx="2"/>
+      <rect x="112" y="244" width="18" height="10" rx="2"/>
+    </g>
+    <text x="60" y="280" font-size="9" fill="#475569">A<tspan dy="2.5" font-size="7.5">3</tspan><tspan dy="-2.5" dx="2.5">·&#160;n&#160;=&#160;11</tspan></text>
+
+    <!-- shared output -->
+    <g stroke="#94a3b8" stroke-width="1.2">
+      <line x1="110" y1="87" x2="190" y2="87"/>
+      <line x1="142" y1="153" x2="190" y2="153"/>
+      <line x1="164" y1="235" x2="190" y2="235"/>
+      <line x1="190" y1="87" x2="190" y2="235"/>
+    </g>
+    <line x1="190" y1="153" x2="204" y2="153" stroke="#334155" stroke-width="1.4"/>
+    <circle cx="208" cy="153" r="4.5" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+    <circle cx="208" cy="153" r="1.8" fill="#64748b"/>
+    <text x="216" y="156" font-size="9" fill="#475569">l<tspan dy="2.5" font-size="7.5">c</tspan><tspan dy="-2.5" dx="2.5">·&#160;class output</tspan></text>
+
+    <text x="20" y="318" font-size="9" fill="#475569">the alternatives share F<tspan dy="2" font-size="7.5">c</tspan><tspan dy="-2" dx="2">&#160;and l</tspan><tspan dy="2" font-size="7.5">c</tspan><tspan dy="-2">: only the interior differs</tspan></text>
+  </g>
+
+  <!-- ==================== (b) anchor and seed ==================== -->
+  <g id="panel-b">
+    <text x="450" y="24" font-size="14" font-weight="700" fill="#0f172a">
+      (b) The anchor α<tspan dy="3" font-size="10">c</tspan><tspan dy="-3" dx="4.5">&#160;and the seed of a candidate</tspan>
+    </text>
+
+    <!-- selected cone and its centroid -->
+    <text x="450" y="52" font-size="9.5" fill="#475569">the selected cone C<tspan dy="2.5" font-size="7.5">σ</tspan><tspan dy="-2.5" dx="2">&#160;is placed globally</tspan></text>
+    <g fill="#dbe9f6" stroke="#1f4e79" stroke-width="1.4">
+      <rect x="470" y="64" width="18" height="10" rx="2"/>
+      <rect x="492" y="64" width="18" height="10" rx="2"/>
+      <rect x="514" y="64" width="18" height="10" rx="2"/>
+      <rect x="481" y="80" width="18" height="10" rx="2"/>
+      <rect x="503" y="80" width="18" height="10" rx="2"/>
+    </g>
+    <g stroke="#1f4e79" stroke-width="1" fill="none">
+      <line x1="479" y1="69" x2="501" y2="69"/>
+      <line x1="501" y1="69" x2="523" y2="69"/>
+      <line x1="479" y1="69" x2="490" y2="85"/>
+      <line x1="523" y1="69" x2="512" y2="85"/>
+    </g>
+    <circle cx="501" cy="77" r="7" fill="#ffffff"/>
+    <circle cx="501" cy="77" r="5" fill="#fffbeb" stroke="#d97706" stroke-width="1.6"/>
+    <circle cx="501" cy="77" r="1.8" fill="#d97706"/>
+    <text x="538" y="81" font-size="8.5" fill="#1f4e79">C<tspan dy="2" font-size="7">σ</tspan></text>
+
+    <text x="450" y="112" font-size="10.5" fill="#0f172a">α<tspan dy="3" font-size="8">c</tspan><tspan dy="-3" dx="2.5">= (1&#160;/&#160;n</tspan><tspan dy="3" font-size="8">σ</tspan><tspan dy="-3">)&#160;·&#160;Σ&#160;p</tspan><tspan dy="3" font-size="8">i</tspan><tspan dy="-3" dx="2.5">&#160;i&#160;∈&#160;C</tspan><tspan dy="3" font-size="8">σ</tspan></text>
+    <text x="450" y="132" font-size="8.5" fill="#64748b">a mean over the cells of the selected cone,</text>
+    <text x="450" y="144" font-size="8.5" fill="#64748b">stored on every member literal of the class</text>
+
+    <!-- seed with n = 1 -->
+    <text x="618" y="104" font-size="9" fill="#475569">n<tspan dy="2.5" font-size="7.5">a</tspan><tspan dy="-2.5" dx="2.5">=&#160;1</tspan></text>
+    <rect x="629" y="144" width="22" height="12" rx="2" fill="#f4f5f7" stroke="#94a3b8"
+          stroke-width="1.2" stroke-dasharray="4 3"/>
+    <circle cx="640" cy="150" r="4.5" fill="#fffbeb" stroke="#d97706" stroke-width="1.4"/>
+    <circle cx="640" cy="150" r="1.6" fill="#d97706"/>
+    <text x="600" y="178" font-size="8.5" fill="#64748b">one slot at α</text>
+
+    <!-- seed with n = 11 -->
+    <text x="743" y="104" font-size="9" fill="#475569">n<tspan dy="2.5" font-size="7.5">a</tspan><tspan dy="-2.5" dx="2.5">=&#160;11</tspan></text>
+    <g fill="#f4f5f7" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="4 3">
+      <rect x="743" y="128" width="22" height="12" rx="2"/>
+      <rect x="767" y="128" width="22" height="12" rx="2"/>
+      <rect x="791" y="128" width="22" height="12" rx="2"/>
+      <rect x="815" y="128" width="22" height="12" rx="2"/>
+      <rect x="743" y="144" width="22" height="12" rx="2"/>
+      <rect x="767" y="144" width="22" height="12" rx="2"/>
+      <rect x="791" y="144" width="22" height="12" rx="2"/>
+      <rect x="815" y="144" width="22" height="12" rx="2"/>
+      <rect x="743" y="160" width="22" height="12" rx="2"/>
+      <rect x="767" y="160" width="22" height="12" rx="2"/>
+      <rect x="791" y="160" width="22" height="12" rx="2"/>
+    </g>
+    <circle cx="800" cy="150" r="7" fill="#ffffff"/>
+    <circle cx="800" cy="150" r="4.5" fill="#fffbeb" stroke="#d97706" stroke-width="1.4"/>
+    <circle cx="800" cy="150" r="1.6" fill="#d97706"/>
+    <text x="743" y="190" font-size="8.5" fill="#64748b">m = ⌈√n⌉ = 4 columns, ⌈n/m⌉ = 3 rows</text>
+
+    <text x="450" y="232" font-size="9" fill="#475569">the grid is centred on α, one site pitch (w<tspan dy="2" font-size="7.5">s</tspan><tspan dy="-2">,&#160;h</tspan><tspan dy="2" font-size="7.5">s</tspan><tspan dy="-2">) per cell:</tspan></text>
+    <text x="450" y="246" font-size="9" fill="#475569">the seeding never looks at W<tspan dy="2" font-size="7.5">i</tspan><tspan dy="-2">, so wide cells may</tspan></text>
+    <text x="450" y="260" font-size="9" fill="#475569">overlap until the global re-place legalises them</text>
+    <text x="450" y="282" font-size="9" fill="#1f4e79">the local solve then moves C<tspan dy="2" font-size="7.5">a</tspan><tspan dy="-2" dx="2">&#160;with every other cell fixed</tspan></text>
+  </g>
+
+  <!-- ==================== (c) what migrates ==================== -->
+  <g id="panel-c">
+    <text x="20" y="356" font-size="14" font-weight="700" fill="#0f172a">
+      (c) What migrates when σ<tspan dy="3" font-size="10">c</tspan><tspan dy="-3" dx="4.5">&#160;changes</tspan>
+    </text>
+
+    <g>
+      <rect x="24" y="372" width="240" height="128" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.2"/>
+      <rect x="274" y="372" width="240" height="128" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.2"/>
+      <rect x="524" y="372" width="240" height="128" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.2"/>
+      <rect x="774" y="372" width="202" height="128" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.2"/>
+    </g>
+
+    <!-- positions -->
+    <g fill="#dbe9f6" stroke="#1f4e79" stroke-width="1.1">
+      <rect x="216" y="382" width="12" height="8" rx="1.5"/>
+      <rect x="232" y="382" width="12" height="8" rx="1.5"/>
+      <rect x="224" y="393" width="12" height="8" rx="1.5"/>
+    </g>
+    <text x="36" y="394" font-size="10" font-weight="700" fill="#0f172a">positions</text>
+    <text x="36" y="416" font-size="8.8" fill="#475569">p<tspan dy="2" font-size="7">i</tspan><tspan dy="-2" dx="2">&#160;←&#160;solve of the cone's nets</tspan></text>
+    <text x="36" y="430" font-size="8.8" fill="#475569">(local CG), every other cell</text>
+    <text x="36" y="444" font-size="8.8" fill="#475569">fixed at its current position</text>
+
+    <!-- area -->
+    <rect x="466" y="382" width="30" height="20" rx="2" fill="none" stroke="#0f766e" stroke-width="1.3"/>
+    <text x="481" y="396" font-size="7.5" fill="#0f766e" text-anchor="middle">W×H</text>
+    <text x="286" y="394" font-size="10" font-weight="700" fill="#0f172a">area, density</text>
+    <text x="286" y="416" font-size="8.8" fill="#475569">A<tspan dy="2" font-size="7">c</tspan><tspan dy="-2" dx="2.8">←</tspan><tspan> Σ W</tspan><tspan dy="2" font-size="7">i</tspan><tspan dy="-2" dx="3">H</tspan><tspan dy="2" font-size="7">i</tspan><tspan dy="-2" dx="3">over C</tspan><tspan dy="2" font-size="7">a</tspan></text>
+    <text x="286" y="430" font-size="8.8" fill="#475569">only the selected cone is a</text>
+    <text x="286" y="444" font-size="8.8" fill="#475569">node of the global problem;</text>
+    <text x="286" y="458" font-size="8.8" fill="#475569">its cells claim the core area</text>
+
+    <!-- nets -->
+    <g stroke="#0f766e" stroke-width="1.2">
+      <line x1="716" y1="390" x2="740" y2="390"/>
+    </g>
+    <circle cx="714" cy="390" r="2.5" fill="#1f4e79"/>
+    <circle cx="742" cy="390" r="2.5" fill="#fff" stroke="#1f4e79" stroke-width="1.2"/>
+    <text x="536" y="394" font-size="10" font-weight="700" fill="#0f172a">nets</text>
+    <text x="536" y="416" font-size="8.8" fill="#475569">every fanout that referenced</text>
+    <text x="536" y="430" font-size="8.8" fill="#475569">another member is redirected</text>
+    <text x="536" y="444" font-size="8.8" fill="#475569">to the selected one; the net</text>
+    <text x="536" y="458" font-size="8.8" fill="#475569">lists are rebuilt after a round</text>
+
+    <!-- anchor -->
+    <circle cx="946" cy="388" r="5" fill="#fffbeb" stroke="#d97706" stroke-width="1.5"/>
+    <circle cx="946" cy="388" r="1.8" fill="#d97706"/>
+    <text x="786" y="394" font-size="10" font-weight="700" fill="#0f172a">anchor</text>
+    <text x="786" y="416" font-size="8.8" fill="#475569">α<tspan dy="2" font-size="7">c</tspan><tspan dy="-2" dx="2">&#160;←&#160;mean of the placed</tspan></text>
+    <text x="786" y="430" font-size="8.8" fill="#475569">cells of the new cone; the</text>
+    <text x="786" y="444" font-size="8.8" fill="#475569">next round seeds from it</text>
+
+    <!-- equal sizes -->
+    <rect x="24" y="518" width="470" height="86" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+    <text x="36" y="538" font-size="9.5" font-weight="700" fill="#0f766e">equal sizes, n<tspan dy="2.5" font-size="8">a</tspan><tspan dy="-2.5" dx="2">&#160;=&#160;n</tspan><tspan dy="2.5" font-size="8">b</tspan><tspan dy="-2.5" dx="2">&#160;for all a</tspan></text>
+    <text x="36" y="556" font-size="8.8" fill="#475569">the seed footprint m × ⌈n/m⌉ and the number of points in α are the same for</text>
+    <text x="36" y="570" font-size="8.8" fill="#475569">every alternative: a migration only moves the coordinates and, if the cell types</text>
+    <text x="36" y="584" font-size="8.8" fill="#475569">differ, the area.  The placement problem is the same set of slots before and after.</text>
+
+    <!-- unequal sizes -->
+    <rect x="506" y="518" width="470" height="86" rx="6" fill="#fffbeb" stroke="#d97706" stroke-width="1.2"/>
+    <text x="518" y="538" font-size="9.5" font-weight="700" fill="#92400e">different sizes, n<tspan dy="2.5" font-size="8">a</tspan><tspan dy="-2.5" dx="2">&#160;≠&#160;n</tspan><tspan dy="2.5" font-size="8">b</tspan></text>
+    <text x="518" y="556" font-size="8.8" fill="#475569">the footprint grows to ⌈√n⌉ × ⌈n/⌈√n⌉⌉ sites and the class area changes with</text>
+    <text x="518" y="570" font-size="8.8" fill="#475569">the new cone; α averages n<tspan dy="2" font-size="7">a</tspan><tspan dy="-2" dx="2">&#160;cells instead of n</tspan><tspan dy="2" font-size="7">σ</tspan><tspan dy="-2" dx="2">.&#160;The cost κ(a) counts wire</tspan></text>
+    <text x="518" y="584" font-size="8.8" fill="#475569">only, so a larger alternative can win the class on wire alone.</text>
+
+    <!-- footer -->
+    <text x="20" y="636" font-size="9" fill="#475569">κ(a) = exact HPWL of the nets incident to C_a; a replaces σ_c iff κ(a) &lt; (1−τ)·κ(σ_c), τ = 0.01.</text>
+    <text x="20" y="654" font-size="9" fill="#64748b">max.aig: 750 classes, 1551 alternatives — class 1 has n = 1 and n = 11; the first selection round switched 97 classes.</text>
+  </g>
+</svg>

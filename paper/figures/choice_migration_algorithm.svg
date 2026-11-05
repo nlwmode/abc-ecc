@@ -1,0 +1,302 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="560"
+     viewBox="0 0 1000 560"
+     font-family="Helvetica Neue, Helvetica, Arial, DejaVu Sans, sans-serif">
+  <title>Migration between the alternative graph and the representative graph</title>
+  <desc>
+    (a) The alternative graph keeps every cone of every choice class; the representative graph
+    keeps one cone per class and is the only graph the global placement, the timing and the
+    reported cost ever see. (b) One selection round: the selected cone is placed globally and
+    the other alternatives are laid out as grids at the class anchor; a candidate is activated,
+    its incident nets are solved locally with every other cell fixed, and its exact HPWL is
+    compared with the incumbent's; when it wins by more than the tolerance the class migrates,
+    the nets are rebuilt and the new representative graph is placed globally from the
+    coordinates of the round.
+  </desc>
+
+  <defs>
+    <marker id="arrowSlate" markerWidth="8" markerHeight="7" refX="7" refY="3.5"
+            orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L7,3.5 L0,7 z" fill="#334155"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="8" markerHeight="7" refX="7" refY="3.5"
+            orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L7,3.5 L0,7 z" fill="#1f4e79"/>
+    </marker>
+  </defs>
+
+  <rect width="1000" height="560" fill="#ffffff"/>
+
+  <!-- ================= (a) the two graphs ================= -->
+  <g id="panel-a">
+    <text x="20" y="24" font-size="14" font-weight="700" fill="#0f172a">
+      (a) The alternative graph and the representative graph
+    </text>
+
+    <!-- alternative graph -->
+    <text x="28" y="53" font-size="12" font-weight="700" fill="#0f172a">alternative graph</text>
+    <text x="28" y="68" font-size="9.5" fill="#475569">every class keeps all of its cones</text>
+
+    <rect x="36" y="84" width="8" height="120" rx="4" fill="#e2e8f0" stroke="#64748b" stroke-width="1.1"/>
+    <g stroke="#94a3b8" stroke-width="1.1">
+      <line x1="44" y1="101" x2="56" y2="101"/>
+      <line x1="44" y1="133" x2="56" y2="133"/>
+      <line x1="44" y1="169" x2="56" y2="169"/>
+      <line x1="44" y1="201" x2="56" y2="201"/>
+    </g>
+
+    <rect x="56" y="88" width="120" height="26" rx="4" fill="#dbe9f6" stroke="#1f4e79" stroke-width="1.6"/>
+    <rect x="56" y="120" width="120" height="26" rx="4" fill="#f4f5f7" stroke="#94a3b8"
+          stroke-width="1.2" stroke-dasharray="5 3"/>
+    <rect x="56" y="156" width="120" height="26" rx="4" fill="#dbe9f6" stroke="#1f4e79" stroke-width="1.6"/>
+    <rect x="56" y="188" width="120" height="26" rx="4" fill="#f4f5f7" stroke="#94a3b8"
+          stroke-width="1.2" stroke-dasharray="5 3"/>
+    <text x="66" y="105" font-size="9.5" fill="#1f4e79" font-weight="600">A<tspan dy="2.5" font-size="7.5">1</tspan></text>
+    <text x="66" y="137" font-size="9.5" fill="#64748b">A<tspan dy="2.5" font-size="7.5">2</tspan></text>
+    <text x="66" y="173" font-size="9.5" fill="#1f4e79" font-weight="600">B<tspan dy="2.5" font-size="7.5">1</tspan></text>
+    <text x="66" y="205" font-size="9.5" fill="#64748b">B<tspan dy="2.5" font-size="7.5">2</tspan></text>
+
+    <!-- class outputs converge on one literal -->
+    <g stroke="#1f4e79" stroke-width="1.3" fill="none">
+      <line x1="176" y1="101" x2="196" y2="117"/>
+      <line x1="176" y1="169" x2="196" y2="185"/>
+    </g>
+    <g stroke="#94a3b8" stroke-width="1.2" fill="none" stroke-dasharray="4 3">
+      <line x1="176" y1="133" x2="196" y2="117"/>
+      <line x1="176" y1="201" x2="196" y2="185"/>
+    </g>
+    <circle cx="196" cy="117" r="5" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+    <circle cx="196" cy="117" r="2" fill="#64748b"/>
+    <circle cx="196" cy="185" r="5" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+    <circle cx="196" cy="185" r="2" fill="#64748b"/>
+    <g stroke="#334155" stroke-width="1.4">
+      <line x1="201" y1="117" x2="214" y2="117"/>
+      <line x1="201" y1="185" x2="214" y2="185"/>
+    </g>
+    <rect x="214" y="84" width="54" height="120" rx="4" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.1"/>
+    <text x="241" y="79" font-size="8.5" text-anchor="middle" fill="#64748b">rest</text>
+
+    <text x="28" y="232" font-size="9" fill="#475569">seeded at the anchor · solved locally</text>
+    <text x="28" y="245" font-size="9" fill="#475569">never globally placed</text>
+
+    <!-- the selection -->
+    <line x1="300" y1="152" x2="404" y2="152" stroke="#334155" stroke-width="2.2" marker-end="url(#arrowSlate)"/>
+    <text x="352" y="138" font-size="9.5" text-anchor="middle" fill="#334155">select one cone per class</text>
+
+    <!-- representative graph -->
+    <text x="580" y="53" font-size="12" font-weight="700" fill="#1f4e79">representative graph</text>
+    <text x="580" y="68" font-size="9.5" fill="#475569">one cone per class survives</text>
+
+    <rect x="596" y="84" width="8" height="120" rx="4" fill="#e2e8f0" stroke="#64748b" stroke-width="1.1"/>
+    <g stroke="#94a3b8" stroke-width="1.1">
+      <line x1="604" y1="117" x2="616" y2="117"/>
+      <line x1="604" y1="185" x2="616" y2="185"/>
+    </g>
+    <rect x="616" y="104" width="120" height="26" rx="4" fill="#dbe9f6" stroke="#1f4e79" stroke-width="1.6"/>
+    <rect x="616" y="172" width="120" height="26" rx="4" fill="#dbe9f6" stroke="#1f4e79" stroke-width="1.6"/>
+    <text x="626" y="121" font-size="9.5" fill="#1f4e79" font-weight="600">A<tspan dy="2.5" font-size="7.5">1</tspan></text>
+    <text x="626" y="189" font-size="9.5" fill="#1f4e79" font-weight="600">B<tspan dy="2.5" font-size="7.5">1</tspan></text>
+    <g stroke="#334155" stroke-width="1.4">
+      <line x1="736" y1="117" x2="774" y2="117"/>
+      <line x1="736" y1="185" x2="774" y2="185"/>
+    </g>
+    <rect x="774" y="84" width="54" height="120" rx="4" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.1"/>
+    <text x="801" y="79" font-size="8.5" text-anchor="middle" fill="#64748b">rest</text>
+
+    <text x="580" y="232" font-size="9" fill="#1f4e79">placed globally · timed · measured</text>
+    <text x="580" y="245" font-size="9" fill="#475569">the graph every reported cost uses</text>
+  </g>
+
+  <!-- ================= (b) one round ================= -->
+  <g id="panel-b">
+    <text x="20" y="292" font-size="14" font-weight="700" fill="#0f172a">
+      (b) One round: how a class migrates
+    </text>
+
+    <!-- stage 1 -->
+    <rect x="20" y="310" width="300" height="190" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.2"/>
+    <text x="32" y="330" font-size="10.5" font-weight="700" fill="#0f172a">
+      (1) iteration <tspan font-style="italic">t</tspan>
+    </text>
+    <rect x="32" y="340" width="276" height="98" rx="4" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.1"/>
+    <g stroke="#e2e8f0" stroke-width="1">
+      <line x1="100" y1="340" x2="100" y2="438"/>
+      <line x1="168" y1="340" x2="168" y2="438"/>
+      <line x1="236" y1="340" x2="236" y2="438"/>
+      <line x1="32" y1="372" x2="308" y2="372"/>
+      <line x1="32" y1="404" x2="308" y2="404"/>
+    </g>
+    <g fill="#e2e8f0" stroke="#94a3b8" stroke-width="1">
+      <rect x="44" y="346" width="20" height="12" rx="2"/>
+      <rect x="268" y="346" width="20" height="12" rx="2"/>
+      <rect x="44" y="414" width="20" height="12" rx="2"/>
+      <rect x="268" y="414" width="20" height="12" rx="2"/>
+      <rect x="236" y="378" width="20" height="12" rx="2"/>
+    </g>
+    <g stroke="#cbd5e1" stroke-width="1">
+      <line x1="54" y1="358" x2="100" y2="376"/>
+      <line x1="278" y1="358" x2="200" y2="392"/>
+      <line x1="54" y1="414" x2="110" y2="410"/>
+      <line x1="278" y1="414" x2="226" y2="410"/>
+    </g>
+
+    <!-- selected cone, placed -->
+    <g fill="#dbe9f6" stroke="#1f4e79" stroke-width="1.6">
+      <rect x="96" y="366" width="22" height="12" rx="3"/>
+      <rect x="126" y="394" width="22" height="12" rx="3"/>
+      <rect x="88" y="412" width="22" height="12" rx="3"/>
+    </g>
+    <g stroke="#1f4e79" stroke-width="1.2" fill="none">
+      <line x1="107" y1="372" x2="137" y2="400"/>
+      <line x1="107" y1="372" x2="99" y2="418"/>
+      <line x1="137" y1="400" x2="99" y2="418"/>
+    </g>
+    <text x="96" y="362" font-size="8.5" fill="#1f4e79" font-weight="600">A<tspan dy="2" font-size="7">1</tspan></text>
+
+    <!-- candidates, gridded at the anchor -->
+    <g stroke="#d97706" stroke-width="1" stroke-dasharray="3 3" opacity="0.5">
+      <line x1="114" y1="397" x2="150" y2="376"/>
+      <line x1="114" y1="397" x2="166" y2="400"/>
+      <line x1="114" y1="397" x2="152" y2="424"/>
+    </g>
+    <g fill="#f4f5f7" stroke="#94a3b8" stroke-width="1.1" stroke-dasharray="4 3">
+      <rect x="150" y="370" width="22" height="12" rx="3"/>
+      <rect x="166" y="394" width="22" height="12" rx="3"/>
+      <rect x="152" y="418" width="22" height="12" rx="3"/>
+    </g>
+    <g stroke="#94a3b8" stroke-width="1" fill="none" stroke-dasharray="3 3">
+      <line x1="161" y1="376" x2="177" y2="400"/>
+      <line x1="177" y1="400" x2="163" y2="424"/>
+    </g>
+    <text x="150" y="366" font-size="8.5" fill="#64748b">A<tspan dy="2" font-size="7">2</tspan></text>
+
+    <circle cx="114" cy="397" r="6" fill="#fffbeb" stroke="#d97706" stroke-width="1.6"/>
+    <circle cx="114" cy="397" r="2.2" fill="#d97706"/>
+    <text x="80" y="400" font-size="7.5" text-anchor="end" fill="#92400e">anchor</text>
+
+    <text x="32" y="462" font-size="9" fill="#475569">A1 is placed globally; A2 is laid out</text>
+    <text x="32" y="476" font-size="9" fill="#475569">as a grid at the class anchor</text>
+
+    <!-- arrow -->
+    <line x1="320" y1="400" x2="348" y2="400" stroke="#334155" stroke-width="1.8" marker-end="url(#arrowSlate)"/>
+
+    <!-- stage 2 -->
+    <rect x="350" y="310" width="300" height="190" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.2"/>
+    <text x="362" y="330" font-size="10.5" font-weight="700" fill="#0f172a">
+      (2) evaluate A<tspan dy="2.5" font-size="8">2</tspan><tspan dy="-2.5" dx="2">locally</tspan>
+    </text>
+    <rect x="362" y="340" width="276" height="98" rx="4" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.1"/>
+    <g stroke="#e2e8f0" stroke-width="1">
+      <line x1="430" y1="340" x2="430" y2="438"/>
+      <line x1="498" y1="340" x2="498" y2="438"/>
+      <line x1="566" y1="340" x2="566" y2="438"/>
+      <line x1="362" y1="372" x2="638" y2="372"/>
+      <line x1="362" y1="404" x2="638" y2="404"/>
+    </g>
+    <g fill="#e2e8f0" stroke="#94a3b8" stroke-width="1">
+      <rect x="374" y="346" width="20" height="12" rx="2"/>
+      <rect x="598" y="346" width="20" height="12" rx="2"/>
+      <rect x="374" y="414" width="20" height="12" rx="2"/>
+      <rect x="598" y="414" width="20" height="12" rx="2"/>
+      <rect x="566" y="378" width="20" height="12" rx="2"/>
+    </g>
+    <g stroke="#cbd5e1" stroke-width="1">
+      <line x1="384" y1="358" x2="430" y2="376"/>
+      <line x1="608" y1="358" x2="530" y2="400"/>
+      <line x1="384" y1="414" x2="440" y2="410"/>
+      <line x1="608" y1="414" x2="570" y2="404"/>
+    </g>
+
+    <!-- the old selection, inactive -->
+    <g fill="#f4f5f7" stroke="#94a3b8" stroke-width="1.1" stroke-dasharray="4 3">
+      <rect x="404" y="362" width="22" height="12" rx="3"/>
+      <rect x="434" y="390" width="22" height="12" rx="3"/>
+      <rect x="396" y="408" width="22" height="12" rx="3"/>
+    </g>
+    <text x="404" y="358" font-size="8.5" fill="#94a3b8">A<tspan dy="2" font-size="7">1</tspan></text>
+
+    <!-- the candidate, activated and locally re-placed -->
+    <g fill="#dbe9f6" stroke="#1f4e79" stroke-width="1.6">
+      <rect x="448" y="368" width="22" height="12" rx="3"/>
+      <rect x="474" y="392" width="22" height="12" rx="3"/>
+      <rect x="438" y="416" width="22" height="12" rx="3"/>
+    </g>
+    <g stroke="#1f4e79" stroke-width="1.2" fill="none">
+      <line x1="459" y1="374" x2="485" y2="398"/>
+      <line x1="459" y1="374" x2="449" y2="422"/>
+      <line x1="485" y1="398" x2="449" y2="422"/>
+    </g>
+    <text x="448" y="364" font-size="8.5" fill="#1f4e79" font-weight="600">A<tspan dy="2" font-size="7">2</tspan></text>
+
+    <circle cx="424" cy="393" r="6" fill="#fffbeb" stroke="#d97706" stroke-width="1.6"/>
+    <circle cx="424" cy="393" r="2.2" fill="#d97706"/>
+
+    <text x="362" y="462" font-size="9" fill="#475569">activate A2, so the class fanouts follow it;</text>
+    <text x="362" y="476" font-size="9" fill="#475569">solve its nets, all other cells fixed · exact HPWL</text>
+
+    <!-- arrow -->
+    <line x1="650" y1="400" x2="678" y2="400" stroke="#334155" stroke-width="1.8" marker-end="url(#arrowSlate)"/>
+
+    <!-- stage 3 -->
+    <rect x="680" y="310" width="300" height="190" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.2"/>
+    <text x="692" y="330" font-size="10.5" font-weight="700" fill="#0f172a">
+      (3) iteration <tspan font-style="italic">t</tspan>+1
+    </text>
+    <rect x="692" y="340" width="276" height="98" rx="4" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.1"/>
+    <g stroke="#e2e8f0" stroke-width="1">
+      <line x1="760" y1="340" x2="760" y2="438"/>
+      <line x1="828" y1="340" x2="828" y2="438"/>
+      <line x1="896" y1="340" x2="896" y2="438"/>
+      <line x1="692" y1="372" x2="968" y2="372"/>
+      <line x1="692" y1="404" x2="968" y2="404"/>
+    </g>
+    <g fill="#e2e8f0" stroke="#94a3b8" stroke-width="1">
+      <rect x="704" y="346" width="20" height="12" rx="2"/>
+      <rect x="928" y="346" width="20" height="12" rx="2"/>
+      <rect x="704" y="414" width="20" height="12" rx="2"/>
+      <rect x="928" y="414" width="20" height="12" rx="2"/>
+      <rect x="896" y="378" width="20" height="12" rx="2"/>
+    </g>
+    <g stroke="#cbd5e1" stroke-width="1">
+      <line x1="714" y1="358" x2="760" y2="376"/>
+      <line x1="938" y1="358" x2="860" y2="398"/>
+      <line x1="714" y1="414" x2="770" y2="410"/>
+      <line x1="938" y1="414" x2="900" y2="404"/>
+    </g>
+
+    <!-- the new selection, placed by the global solve -->
+    <g fill="#dbe9f6" stroke="#1f4e79" stroke-width="1.6">
+      <rect x="824" y="372" width="22" height="12" rx="3"/>
+      <rect x="790" y="406" width="22" height="12" rx="3"/>
+      <rect x="768" y="382" width="22" height="12" rx="3"/>
+    </g>
+    <g stroke="#1f4e79" stroke-width="1.2" fill="none">
+      <line x1="835" y1="378" x2="801" y2="412"/>
+      <line x1="835" y1="378" x2="779" y2="388"/>
+      <line x1="801" y1="412" x2="779" y2="388"/>
+    </g>
+    <text x="768" y="378" font-size="8.5" fill="#1f4e79" font-weight="600">A<tspan dy="2" font-size="7">2</tspan></text>
+
+    <!-- the old selection, ghosted and re-seeded -->
+    <g fill="#f4f5f7" stroke="#94a3b8" stroke-width="1.1" stroke-dasharray="4 3">
+      <rect x="846" y="370" width="22" height="12" rx="3"/>
+      <rect x="860" y="394" width="22" height="12" rx="3"/>
+      <rect x="848" y="416" width="22" height="12" rx="3"/>
+    </g>
+    <text x="846" y="366" font-size="8.5" fill="#94a3b8">A<tspan dy="2" font-size="7">1</tspan></text>
+
+    <circle cx="805" cy="393" r="6" fill="#fffbeb" stroke="#d97706" stroke-width="1.6"/>
+    <circle cx="805" cy="393" r="2.2" fill="#d97706"/>
+
+    <text x="692" y="462" font-size="9" fill="#475569">if it wins by τ, switch; rebuild the nets</text>
+    <text x="692" y="476" font-size="9" fill="#475569">and re-place globally, then re-anchor</text>
+
+    <!-- loop note -->
+    <text x="500" y="534" font-size="9.5" text-anchor="middle" fill="#1f4e79">
+      repeat for R = 3 rounds · a round with no switch ends the loop
+    </text>
+    <text x="500" y="550" font-size="9" text-anchor="middle" fill="#64748b">
+      the coordinates of the round are the warm start of the next global placement
+    </text>
+  </g>
+</svg>

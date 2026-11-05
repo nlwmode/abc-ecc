@@ -1,0 +1,144 @@
+% ---------------------------------------------------------------------------
+% How the physical information of one choice class migrates between its
+% subgraphs.  Companion text to figures/choice_migration_physics.svg.
+%
+% The equations follow the implementation in src/phys/place/physPlace.c:
+%   Phys_PlaceClassAnchors   (anchor, eq. anchor)
+%   Phys_PlaceSeedAlt        (seed grid, eqs. grid/seed)
+%   Phys_PlaceEvalAlt        (local solve, eq. local)
+%   Phys_PlaceClassCost      (cost, eq. cost)
+%   Phys_PlaceSelectRounds   (switch, eq. switch)
+%   Phys_PlaceCollectNets    (net rebuild, eq. migrate, last line)
+% ---------------------------------------------------------------------------
+
+\paragraph{Notation.}
+A choice class~$c$ owns the set of alternatives~$A_c$; the alternative
+$a\in A_c$ is a cone~$C_a\subseteq V$ of the bound netlist and
+$n_a=|C_a|$ is its size.  $\sigma_c\in A_c$ is the selected alternative,
+cell~$i$ is placed at $\mathbf p_i=(x_i,y_i)$ and occupies
+$W_i\times H_i$, $w_s\times h_s$ is the site pitch, and
+$\mathcal N(C_a)$ is the set of nets whose driver or sinks lie in the
+cone.  $V_{\mathrm{on}}$ is the set of active nodes of the placement.
+
+\paragraph{Anchor.}
+The alternatives of a class share their fanins and their output, so the
+only boundary at which they can be compared is the placement of that
+output.  The anchor is the centroid of the cells of the selected cone,
+\begin{equation}
+  \boldsymbol\alpha_c
+  \;=\; \frac{1}{n_{\sigma_c}}\sum_{i\in C_{\sigma_c}} \mathbf p_i ,
+  \label{eq:anchor}
+\end{equation}
+and the value is stored on every member literal of the class, so a
+candidate can be seeded around it and the next round can find it again.
+
+\paragraph{Seed.}
+A candidate is laid out on a grid of one site pitch per cell, centred on
+the anchor,
+\begin{equation}
+  m_a=\lceil\sqrt{n_a}\rceil,\qquad
+  q_i=i\bmod m_a,\qquad
+  r_i=\left\lfloor i/m_a\right\rfloor,\qquad
+  i=0,\dots,n_a-1,
+  \label{eq:grid}
+\end{equation}
+\begin{equation}
+  \mathbf p_i^{(0)} =
+  \Big(\,
+    \alpha_c^{x}+\big(q_i-\lfloor\tfrac{m_a-1}{2}\rfloor\big)w_s,\;
+    \alpha_c^{y}+\big(r_i-\lfloor\tfrac{\lfloor (n_a-1)/m_a\rfloor}{2}\rfloor\big)h_s
+  \,\Big).
+  \label{eq:seed}
+\end{equation}
+The index is the position of the cell in the cone; an object of the cone
+that is not a cell keeps its index and leaves a hole in the grid.  The
+seeding never reads $W_i$: a wide cell is seeded like a narrow one, so
+cells may overlap until the global re-placement legalises them.
+
+\paragraph{Local solve.}
+With the cone free and every other cell fixed, the placement solves the
+same clique model as the global placement, restricted to the incident
+nets, and adds a small anchor term to the seed so that a cell no net
+constrains stays where the seeding put it,
+\begin{equation}
+  \min_{\{\mathbf p_i\}_{i\in C_a}}
+  \sum_{q\in\mathcal N(C_a)} \frac{1}{|q|}
+  \sum_{\{u,v\}\subseteq q}\|\mathbf p_u-\mathbf p_v\|^2
+  \;+\;\varepsilon\sum_{i\in C_a}\|\mathbf p_i-\mathbf p_i^{(0)}\|^2 ,
+  \qquad
+  \varepsilon = 10^{-3}\Big(\frac{1}{n_a}\sum_{i\in C_a} d_i+1\Big),
+  \label{eq:local}
+\end{equation}
+where $d_i$ is the diagonal of the clique Laplacian at cell~$i$ and a
+fixed cell $v\notin C_a$ contributes its current position to the
+right-hand side.
+
+\paragraph{Cost and switch.}
+The cost of an alternative is the exact half-perimeter wirelength of the
+nets it takes part in, over the active pins,
+\begin{equation}
+  \kappa(a)=\sum_{q\in\mathcal N(C_a)}\Big[
+    \max_{v\in q\cap V_{\mathrm{on}}} x_v-\min_{v\in q\cap V_{\mathrm{on}}} x_v
+    +\max_{v\in q\cap V_{\mathrm{on}}} y_v-\min_{v\in q\cap V_{\mathrm{on}}} y_v
+  \Big].
+  \label{eq:cost}
+\end{equation}
+A candidate replaces the selection only when it beats the incumbent by
+more than the tolerance, which keeps a tie from oscillating between two
+alternatives,
+\begin{equation}
+  \sigma_c \leftarrow \arg\min_{a\in A_c}\kappa(a)
+  \quad\text{iff}\quad
+  \min_{a\in A_c}\kappa(a) < (1-\tau)\,\kappa(\sigma_c),
+  \qquad \tau=0.01 .
+  \label{eq:switch}
+\end{equation}
+The incumbent is measured at its globally placed coordinates and the
+challenger after its local solve, so the comparison is between a global
+configuration and a locally re-placed one.
+
+\paragraph{What migrates.}
+When $\sigma_c$ changes, the physical information of the class moves from
+one subgraph to the other in a single step:
+\begin{equation}
+\begin{aligned}
+  \mathbf p_i &\leftarrow \text{position after the local solve},
+     && i\in C_{\sigma_c'},\\
+  A_c &\leftarrow \sum_{i\in C_{\sigma_c'}} W_i\,H_i,\\
+  \mathrm{ref}(v) &\leftarrow \sigma_c',
+     && \text{for every cell $v$ outside the class}\\
+  &&& \text{whose fanin referenced a member},\\
+  \boldsymbol\alpha_c &\leftarrow \frac{1}{n_{\sigma_c'}}
+     \sum_{i\in C_{\sigma_c'}}\mathbf p_i .
+\end{aligned}
+\label{eq:migrate}
+\end{equation}
+Only the selected cone takes part in the global problem: an inactive
+alternative is neither moved nor counted as a pin of any net, so the
+area, the density and the core follow $A_c$.  The fanout redirection is
+what keeps the class output net attached to the new member.  After a round that
+switched a class the net lists are rebuilt, the new representative graph
+is placed globally from the coordinates of the round, and the anchors
+are recomputed.
+
+\paragraph{Equal and unequal sizes.}
+If $n_a=n_b$ for all $a,b\in A_c$, the seeded footprint
+$m\times\lceil n/m\rceil$ and the number of terms in \eqref{eq:anchor}
+are the same for every alternative: a migration only moves the
+coordinates, and the area changes only through the cell types.  If
+$n_a\neq n_b$,
+\begin{equation}
+  \Delta A_c
+  =\sum_{i\in C_{\sigma_c'}}W_iH_i-\sum_{i\in C_{\sigma_c}}W_iH_i
+  \;\neq\;0,
+  \qquad
+  \text{footprint}
+  =\Big\lceil\sqrt{n_a}\Big\rceil
+   \times\Big\lceil n_a/\big\lceil\sqrt{n_a}\,\big\rceil\Big\rceil,
+  \label{eq:size}
+\end{equation}
+and $\boldsymbol\alpha_c$ is a mean over $n_{\sigma_c'}$ cells instead of
+$n_{\sigma_c}$.  The cost \eqref{eq:cost} contains no area term, so a
+larger alternative can win its class on wirelength alone, and the
+migration then grows the placed area without the selection having priced
+the growth.
